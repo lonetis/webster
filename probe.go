@@ -16,9 +16,10 @@ import (
 )
 
 type job struct {
-	Origin  string
-	Rank    string
-	Timeout int // seconds
+	Origin   string
+	Rank     string
+	Timeout  int    // seconds
+	Resolver string // empty uses system DNS
 }
 
 type result struct {
@@ -28,12 +29,16 @@ type result struct {
 	Millis int64
 }
 
-func newProbeTransport() *http.Transport {
-	return &http.Transport{
+func newProbeTransport(resolver string) *http.Transport {
+	transport := &http.Transport{
 		DisableKeepAlives:      true,
 		ForceAttemptHTTP2:      true,
 		MaxResponseHeaderBytes: 1 << 20,
 	}
+	if resolver != "" {
+		transport.DialContext = resolverDialContext(resolver)
+	}
+	return transport
 }
 
 func validOrigin(raw string) bool {
@@ -70,11 +75,18 @@ func probe(transport http.RoundTripper, j job) (r result) {
 	// Keep the individual network error as well as its aggregate category.
 	r.Detail = err.Error()
 	var dns *net.DNSError
+	isDNS := errors.As(err, &dns)
+	if isDNS && j.Resolver != "" {
+		// net.Resolver reports the OS nameserver even when its Dial hook overrides it.
+		detail := *dns
+		detail.Server = j.Resolver
+		r.Detail = detail.Error()
+	}
 	var netErr net.Error
 	switch {
 	case errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &netErr) && netErr.Timeout()):
 		r.Reason = "timeout"
-	case errors.As(err, &dns):
+	case isDNS:
 		r.Reason = "dns"
 	case handshakeFailed.Load():
 		r.Reason = "tls"
@@ -86,11 +98,10 @@ func probe(transport http.RoundTripper, j job) (r result) {
 	return r
 }
 
-// Each child reads one assignment at a time and reuses its transport.
+// Each child handles one assignment at a time. Keep transports scoped to their resolver.
 func serveWorker(in io.Reader, out io.Writer) error {
 	decode, encode := json.NewDecoder(in), json.NewEncoder(out)
-	transport := newProbeTransport()
-	defer transport.CloseIdleConnections()
+	transports := make(map[string]*http.Transport)
 	for {
 		var j job
 		if err := decode.Decode(&j); err != nil {
@@ -99,7 +110,14 @@ func serveWorker(in io.Reader, out io.Writer) error {
 			}
 			return err
 		}
-		if err := encode.Encode(probe(transport, j)); err != nil {
+		transport := transports[j.Resolver]
+		if transport == nil {
+			transport = newProbeTransport(j.Resolver)
+			transports[j.Resolver] = transport
+		}
+		r := probe(transport, j)
+		transport.CloseIdleConnections()
+		if err := encode.Encode(r); err != nil {
 			return err
 		}
 	}

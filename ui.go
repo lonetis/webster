@@ -20,7 +20,7 @@ type app struct {
 	edit, entry, message string
 }
 
-func dashboard(ctx context.Context, input, dir string, meta snapshot) error {
+func dashboard(ctx context.Context, input, dir string, meta snapshot, config settings) error {
 	screen, err := tcell.NewScreen()
 	if err != nil {
 		return err
@@ -28,7 +28,7 @@ func dashboard(ctx context.Context, input, dir string, meta snapshot) error {
 	if err := screen.Init(); err != nil {
 		return err
 	}
-	a := &app{settings: settings{1000, 8, 10}, input: input, dir: dir, meta: meta}
+	a := &app{settings: config, input: input, dir: dir, meta: meta}
 	func() { defer screen.Fini(); a.loop(ctx, screen) }()
 	if s := a.scan; s != nil {
 		fmt.Printf("%d completed · %d reachable · %d failed\nResults: %s\n", s.completed, s.reachable, s.completed-s.reachable, s.file.Name())
@@ -140,6 +140,8 @@ func (a *app) key(ctx context.Context, e *tcell.EventKey) bool {
 	}
 	a.message = ""
 	switch {
+	case ch == 'd':
+		a.rotatingDNS = !a.rotatingDNS
 	case ch == 'p':
 		a.edit, a.entry = "Processes", ""
 	case ch == 't':

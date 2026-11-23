@@ -35,10 +35,12 @@ func run() error {
 		root = filepath.Join(home, userDataRoot)
 	}
 	data := flags.String("data", filepath.Join(root, "data"), "directory for global CrUX snapshots")
-	var input, results string
+	var input, results, dnsMode, resolverList string
 	if !fetch {
 		flags.StringVar(&input, "input", "", "use a local origin,rank CSV instead of the downloaded snapshot")
 		flags.StringVar(&results, "results", filepath.Join(root, "results"), "directory for per-origin run results")
+		flags.StringVar(&dnsMode, "dns", "system", "DNS mode for origin checks: system or rotating")
+		flags.StringVar(&resolverList, "resolvers", defaultResolvers, "comma-separated resolver IPs for rotating mode (optional ports)")
 	}
 	flags.Usage = func() {
 		fmt.Fprintln(flags.Output(), "Usage: webster [options]  |  webster fetch [-data directory]")
@@ -57,15 +59,22 @@ func run() error {
 	if fetch {
 		return fetchDataset(ctx, *data, os.Stdout)
 	}
+	if dnsMode != "system" && dnsMode != "rotating" {
+		return fmt.Errorf("invalid DNS mode %q: choose system or rotating", dnsMode)
+	}
+	servers, err := parseResolvers(resolverList)
+	if err != nil {
+		return err
+	}
+	config := settings{targets: 1000, processes: 8, timeout: 10, rotatingDNS: dnsMode == "rotating", resolvers: servers}
 	var meta snapshot
-	var err error
 	if input == "" {
 		input, meta, err = latestDataset(*data)
 		if err != nil {
 			return err
 		}
 	}
-	return dashboard(ctx, input, results, meta)
+	return dashboard(ctx, input, results, meta, config)
 }
 
 func main() {

@@ -46,7 +46,7 @@ func TestResizeTimeoutAndQuit(t *testing.T) {
 	if err := os.WriteFile(path, []byte(input.String()), 0600); err != nil {
 		t.Fatal(err)
 	}
-	s, err := startScan(context.Background(), path, dir, settings{8, 1, 10}, 0)
+	s, err := startScan(context.Background(), path, dir, settings{targets: 8, processes: 1, timeout: 10}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

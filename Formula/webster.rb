@@ -1,16 +1,16 @@
 class Webster < Formula
   desc "Terminal connection tester for CrUX web origins"
   homepage "https://github.com/lonetis/webster"
-  version "0.1.0"
+  version "0.2.0"
 
   on_arm do
-    url "https://github.com/lonetis/webster/releases/download/v0.1.0/webster-macos-arm64.tar.gz"
-    sha256 "e1f1c677608c22c6d28a5a51733e96775a7b0c14739cdb374293b6068ddbaf92"
+    url "https://github.com/lonetis/webster/releases/download/v0.2.0/webster-macos-arm64.tar.gz"
+    sha256 "2fcdcee66b00267932af50b72e7ba31981d4d7d8b57e1916b0a0fd08d91e8c16"
   end
 
   on_intel do
-    url "https://github.com/lonetis/webster/releases/download/v0.1.0/webster-macos-amd64.tar.gz"
-    sha256 "5bf03f5f289779e5e0bdebe25afb8aacbd65311e1c3dcce11361218ff960ac64"
+    url "https://github.com/lonetis/webster/releases/download/v0.2.0/webster-macos-amd64.tar.gz"
+    sha256 "d9e2f81e90e959f72ebf5e690578800e76722036caac8a9d154b21ed222a319c"
   end
 
   depends_on :macos

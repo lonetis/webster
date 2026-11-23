@@ -14,7 +14,19 @@ import (
 	"time"
 )
 
-type settings struct{ targets, processes, timeout int }
+type settings struct {
+	targets, processes, timeout int
+	rotatingDNS                 bool
+	resolvers                   []string
+}
+
+func (c settings) dnsMode() string {
+	if c.rotatingDNS {
+		return "rotating"
+	}
+	return "system"
+}
+
 type worker chan job
 type completion struct {
 	worker worker
@@ -32,6 +44,7 @@ type observation struct {
 type scan struct {
 	settings
 	goal, issued, completed, reachable int
+	nextResolver                       int
 	eof                                bool
 	started, ended                     time.Time
 	statuses                           map[int]int
@@ -76,7 +89,7 @@ func startScan(parent context.Context, input, dir string, config settings, known
 		return nil, err
 	}
 	writer := csv.NewWriter(file)
-	err = writer.Write([]string{"origin", "rank", "outcome", "status_code", "reason", "detail", "elapsed_ms"})
+	err = writer.Write([]string{"origin", "rank", "outcome", "status_code", "reason", "detail", "elapsed_ms", "dns_resolver"})
 	writer.Flush()
 	if err == nil {
 		err = writer.Error()
@@ -117,7 +130,12 @@ func (s *scan) next() (job, bool) {
 		return job{}, false
 	}
 	s.issued++
-	return job{Origin: row[0], Rank: row[1], Timeout: s.timeout}, true
+	j := job{Origin: row[0], Rank: row[1], Timeout: s.timeout}
+	if s.rotatingDNS {
+		j.Resolver = s.resolvers[s.nextResolver]
+		s.nextResolver = (s.nextResolver + 1) % len(s.resolvers)
+	}
+	return j, true
 }
 
 func (s *scan) fill() {
@@ -207,7 +225,11 @@ func (s *scan) accept(c completion) {
 	s.recent = append(s.recent, observation{})
 	copy(s.recent[1:], s.recent)
 	s.recent[0] = observation{c.job.Origin, r}
-	s.err = s.writer.Write([]string{c.job.Origin, c.job.Rank, outcome, status, r.Reason, r.Detail, strconv.FormatInt(r.Millis, 10)})
+	resolver := c.job.Resolver
+	if resolver == "" {
+		resolver = "system"
+	}
+	s.err = s.writer.Write([]string{c.job.Origin, c.job.Rank, outcome, status, r.Reason, r.Detail, strconv.FormatInt(r.Millis, 10), resolver})
 	if s.err == nil && len(s.workers) <= s.processes {
 		if j, ok := s.next(); ok {
 			c.worker <- j

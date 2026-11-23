@@ -96,17 +96,20 @@ func (a *app) draw(screen tcell.Screen) {
 			{"Targets", targets, "← → presets   n exact"},
 			{"Processes", number(a.processes), "+ / − adjust   p set"},
 			{"Timeout", fmt.Sprintf("%d s", a.timeout), "[ / ] adjust   t set"},
+			{"DNS", a.dnsMode(), "d toggle"},
 		} {
 			y := 9 + i*2
 			v.text(2, y, plain, row[0])
 			v.text(15, y, accent, row[1])
 			v.text(29, y, quiet, row[2])
 		}
-		v.text(2, 15, quiet, "One HEAD request per origin · first response")
+		if h > 19 {
+			v.text(2, 17, quiet, "One HEAD request per origin · first response")
+		}
 		keys = "Enter start run    q quit"
 	} else {
 		a.drawScan(v)
-		keys = "+/- processes  [ ] timeout  p/t set  q quit"
+		keys = "+/- processes  [ ] timeout  p/t set  d DNS  q quit"
 		if !a.running() {
 			keys = "q quit"
 		}
@@ -152,6 +155,7 @@ func (a *app) drawScan(v canvas) {
 	v.text(2+filled, 3, quiet, strings.Repeat("─", width-filled))
 	rate := float64(s.completed) / max(0.001, elapsed.Seconds())
 	v.text(2, 4, plain, fmt.Sprintf("Processes %d/%d   Timeout %ds   %.1f/s avg", len(s.workers), s.processes, s.timeout, rate))
+	v.text(2, 5, plain, "DNS "+s.dnsMode())
 
 	n := min(len(s.history), v.w-28)
 	sec := int(elapsed / time.Second)
