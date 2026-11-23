@@ -8,7 +8,23 @@ import (
 	"strings"
 )
 
-const defaultResolvers = "1.1.1.1,8.8.8.8,9.9.9.9"
+// Spread successive assignments across providers before cycling through their alternates.
+var publicResolvers = []struct{ name, primary, alternate string }{
+	{"Cloudflare", "1.1.1.1", "1.0.0.1"},
+	{"Google", "8.8.8.8", "8.8.4.4"},
+	{"Quad9", "9.9.9.10", "149.112.112.10"},
+	{"AdGuard", "94.140.14.140", "94.140.14.141"},
+	{"Control D", "76.76.2.0", "76.76.10.0"},
+}
+
+func defaultResolverList() string {
+	var primary, alternate []string
+	for _, vendor := range publicResolvers {
+		primary = append(primary, vendor.primary)
+		alternate = append(alternate, vendor.alternate)
+	}
+	return strings.Join(append(primary, alternate...), ",")
+}
 
 func parseResolvers(list string) ([]string, error) {
 	var servers []string
@@ -29,12 +45,11 @@ func parseResolvers(list string) ([]string, error) {
 
 // Only the socket destination changes. HTTP and TLS still see the origin hostname.
 func resolverDialContext(server string) func(context.Context, string, string) (net.Conn, error) {
-	var upstream net.Dialer
 	dialer := net.Dialer{Resolver: &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
 			// net.Resolver chooses UDP or TCP, including TCP retries after truncation.
-			return upstream.DialContext(ctx, network, server)
+			return dialObservedDNS(ctx, network, server)
 		},
 	}}
 	return func(ctx context.Context, network, address string) (net.Conn, error) {

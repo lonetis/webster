@@ -1,10 +1,8 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
-	"encoding/binary"
 	"encoding/csv"
 	"fmt"
 	"net"
@@ -18,6 +16,7 @@ import (
 	"time"
 
 	"github.com/gdamore/tcell/v2"
+	"golang.org/x/net/dns/dnsmessage"
 )
 
 func TestResolverAddresses(t *testing.T) {
@@ -33,9 +32,20 @@ func TestResolverAddresses(t *testing.T) {
 	}
 }
 
-// Answer a single-question UDP query with loopback for A, an empty answer
-// for AAAA, or NXDOMAIN. Only the question is copied, excluding EDNS options.
 func testDNS(t *testing.T, nxdomain bool) string {
+	t.Helper()
+	return testDNSReplies(t, func(m *dnsmessage.Message) {
+		q := m.Questions[0]
+		if nxdomain {
+			m.RCode = dnsmessage.RCodeNameError
+		} else if q.Type == dnsmessage.TypeA {
+			m.Answers = []dnsmessage.Resource{{Header: dnsmessage.ResourceHeader{Name: q.Name, Class: q.Class},
+				Body: &dnsmessage.AResource{A: [4]byte{127, 0, 0, 1}}}}
+		}
+	})
+}
+
+func testDNSReplies(t *testing.T, answer func(*dnsmessage.Message)) string {
 	t.Helper()
 	sock, err := net.ListenPacket("udp4", "127.0.0.1:0")
 	if err != nil {
@@ -51,24 +61,19 @@ func testDNS(t *testing.T, nxdomain bool) string {
 			if err != nil {
 				return
 			}
-			if n < 17 {
+			var m dnsmessage.Message
+			if m.Unpack(buf[:n]) != nil || len(m.Questions) != 1 {
 				continue
 			}
-			end := bytes.IndexByte(buf[12:n], 0)
-			if end < 0 || 17+end > n {
-				continue
+			m.Response, m.RecursionAvailable = true, true
+			m.Additionals = nil
+			answer(&m)
+			wire, err := m.Pack()
+			if err != nil {
+				t.Error(err)
+				return
 			}
-			reply := append([]byte(nil), buf[:17+end]...)
-			reply[2], reply[3] = 0x81, 0x80 // standard recursive response
-			clear(reply[6:12])
-			if nxdomain {
-				reply[3] |= 3
-			} else if binary.BigEndian.Uint16(reply[len(reply)-4:]) == 1 {
-				reply[7] = 1
-				// Compressed name, A, IN, TTL 0, four bytes of RDATA.
-				reply = append(reply, 0xc0, 12, 0, 1, 0, 1, 0, 0, 0, 0, 0, 4, 127, 0, 0, 1)
-			}
-			if _, err := sock.WriteTo(reply, client); err != nil {
+			if _, err := sock.WriteTo(wire, client); err != nil {
 				return
 			}
 		}
@@ -91,7 +96,7 @@ func TestResolverPreservesHTTPSHostname(t *testing.T) {
 	defer transport.CloseIdleConnections()
 	transport.TLSClientConfig = &tls.Config{RootCAs: server.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs}
 	origin := strings.Replace(server.URL, "127.0.0.1", hostname, 1)
-	got := probe(transport, job{Origin: origin, Timeout: 3, Resolver: upstream})
+	got := probe(transport, job{Origin: origin, Timeout: 3, Resolver: upstream}, nil)
 	if got.Status != 204 {
 		t.Fatalf("HTTPS result: %+v", got)
 	}
@@ -125,7 +130,7 @@ func TestWorkersRotateDNSAndSwitchBackToSystem(t *testing.T) {
 			if s.err != nil {
 				t.Fatal(s.err)
 			}
-			if s.completed == 1 {
+			if c.dns == nil && s.completed == 1 {
 				toggle()
 			} // resume rotation for the remaining jobs
 		case <-time.After(8 * time.Second):

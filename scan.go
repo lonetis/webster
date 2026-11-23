@@ -33,6 +33,7 @@ type completion struct {
 	job    job
 	result result
 	err    error
+	dns    *dnsEvent
 }
 
 type bucket struct{ second, reached, failed int }
@@ -50,6 +51,7 @@ type scan struct {
 	statuses                           map[int]int
 	reasons                            map[string]int
 	history                            [60]bucket
+	resolverStats                      map[string]*resolverStats
 	recent                             []observation
 
 	executable   string
@@ -107,7 +109,7 @@ func startScan(parent context.Context, input, dir string, config settings, known
 	}
 	return &scan{
 		settings: config, goal: goal, started: time.Now(),
-		statuses: make(map[int]int), reasons: make(map[string]int),
+		statuses: make(map[int]int), reasons: make(map[string]int), resolverStats: make(map[string]*resolverStats),
 		executable: executable, ctx: ctx, cancel: cancel,
 		workers: make(map[worker]struct{}), reports: make(chan completion),
 		source: source, reader: reader, file: file, writer: writer,
@@ -187,13 +189,25 @@ func (s *scan) runWorker(w worker) {
 			if !ok {
 				return
 			}
-			var r result
 			err = write.Encode(j)
-			if err == nil {
-				err = read.Decode(&r)
+			for err == nil {
+				var msg workerMessage
+				if err = read.Decode(&msg); err != nil {
+					break
+				}
+				if msg.DNS != nil {
+					report(completion{worker: w, job: j, dns: msg.DNS})
+					continue
+				}
+				if msg.Result == nil {
+					err = errors.New("empty worker message")
+					break
+				}
+				report(completion{worker: w, job: j, result: *msg.Result})
+				break
 			}
-			report(completion{w, j, r, err})
 			if err != nil {
+				report(completion{worker: w, job: j, err: err})
 				return
 			}
 		}
@@ -201,6 +215,15 @@ func (s *scan) runWorker(w worker) {
 }
 
 func (s *scan) accept(c completion) {
+	if c.dns != nil {
+		stats := s.resolverStats[c.job.Resolver]
+		if stats == nil {
+			stats = &resolverStats{}
+			s.resolverStats[c.job.Resolver] = stats
+		}
+		stats.record(*c.dns, int(time.Since(s.started)/time.Second))
+		return
+	}
 	if c.err != nil {
 		s.err = fmt.Errorf("worker process: %w", c.err)
 		return

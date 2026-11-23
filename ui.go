@@ -18,6 +18,8 @@ type app struct {
 	meta                 snapshot
 	scan                 *scan
 	edit, entry, message string
+	showResolvers        bool
+	resolverRow          int
 }
 
 func dashboard(ctx context.Context, input, dir string, meta snapshot, config settings) error {
@@ -134,6 +136,19 @@ func (a *app) key(ctx context.Context, e *tcell.EventKey) bool {
 	}
 	if e.Key() == tcell.KeyEscape {
 		return true
+	}
+	if a.scan != nil {
+		switch {
+		case ch == 'r':
+			a.showResolvers = !a.showResolvers
+			return false
+		case a.showResolvers && e.Key() == tcell.KeyDown:
+			a.resolverRow = min(a.resolverRow+1, len(a.scan.resolvers)-1)
+			return false
+		case a.showResolvers && e.Key() == tcell.KeyUp:
+			a.resolverRow = max(0, a.resolverRow-1)
+			return false
+		}
 	}
 	if a.scan != nil && !a.running() {
 		return false

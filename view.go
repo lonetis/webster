@@ -107,11 +107,17 @@ func (a *app) draw(screen tcell.Screen) {
 			v.text(2, 17, quiet, "One HEAD request per origin · first response")
 		}
 		keys = "Enter start run    q quit"
+	} else if a.showResolvers {
+		a.drawResolvers(v)
+		keys = "↑/↓ endpoint   r overview   q quit"
+		if a.running() {
+			keys = "↑/↓ endpoint   d DNS mode   r overview   q quit"
+		}
 	} else {
 		a.drawScan(v)
 		keys = "+/- processes  [ ] timeout  p/t set  d DNS  q quit"
 		if !a.running() {
-			keys = "q quit"
+			keys = "r resolvers  q quit"
 		}
 	}
 	message := a.message
@@ -155,7 +161,17 @@ func (a *app) drawScan(v canvas) {
 	v.text(2+filled, 3, quiet, strings.Repeat("─", width-filled))
 	rate := float64(s.completed) / max(0.001, elapsed.Seconds())
 	v.text(2, 4, plain, fmt.Sprintf("Processes %d/%d   Timeout %ds   %.1f/s avg", len(s.workers), s.processes, s.timeout, rate))
-	v.text(2, 5, plain, "DNS "+s.dnsMode())
+	dnsLine := "DNS " + s.dnsMode() + "   r resolver status"
+	if len(s.resolverStats) > 0 {
+		var refused, policy, timeouts int
+		for _, r := range s.resolverStats {
+			refused += r.refused
+			policy += r.policy
+			timeouts += r.timeouts
+		}
+		dnsLine = fmt.Sprintf("DNS %s  Ref %d  EDE %d  TO %d  r details", s.dnsMode(), refused, policy, timeouts)
+	}
+	v.text(2, 5, plain, dnsLine)
 
 	n := min(len(s.history), v.w-28)
 	sec := int(elapsed / time.Second)

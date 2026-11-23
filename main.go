@@ -40,7 +40,7 @@ func run() error {
 		flags.StringVar(&input, "input", "", "use a local origin,rank CSV instead of the downloaded snapshot")
 		flags.StringVar(&results, "results", filepath.Join(root, "results"), "directory for per-origin run results")
 		flags.StringVar(&dnsMode, "dns", "system", "DNS mode for origin checks: system or rotating")
-		flags.StringVar(&resolverList, "resolvers", defaultResolvers, "comma-separated resolver IPs for rotating mode (optional ports)")
+		flags.StringVar(&resolverList, "resolvers", defaultResolverList(), "comma-separated resolver IPs for rotating mode (optional ports)")
 	}
 	flags.Usage = func() {
 		fmt.Fprintln(flags.Output(), "Usage: webster [options]  |  webster fetch [-data directory]")

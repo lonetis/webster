@@ -22,7 +22,7 @@ func TestProbeKeepsFirstStatus(t *testing.T) {
 			}
 			w.WriteHeader(code)
 		}))
-		got := probe(newProbeTransport(""), job{Origin: server.URL, Timeout: 5})
+		got := probe(newProbeTransport(""), job{Origin: server.URL, Timeout: 5}, nil)
 		server.Close()
 		if got.Status != code || got.Reason != "" || calls.Load() != 1 {
 			t.Fatalf("HTTP %d: %+v, calls %d", code, got, calls.Load())
@@ -48,7 +48,7 @@ func TestProbeClassifiesNetworkFailures(t *testing.T) {
 		{"https://missing.invalid", "dns", dns},
 		{"https://example.org/path", "input", newProbeTransport("")},
 	} {
-		got := probe(tt.transport, job{Origin: tt.origin, Timeout: 5})
+		got := probe(tt.transport, job{Origin: tt.origin, Timeout: 5}, nil)
 		if got.Reason != tt.want || got.Status != 0 || got.Detail == "" {
 			t.Errorf("want %s, got %+v", tt.want, got)
 		}

@@ -98,6 +98,7 @@ Snapshots and result CSVs belong to your user account. To reclaim the snapshot s
 | [ / ] | Decrease or increase the timeout by one second |
 | t | Enter a timeout in whole seconds |
 | d | Toggle system DNS and rotating DNS before or during a run |
+| r | Open live resolver statistics during a scan or after completion. Use ↑ / ↓ to inspect an endpoint |
 | Enter | Apply an edited value or start from the setup screen |
 | Esc | Cancel an edit, or quit from the dashboard |
 | q / Ctrl+C | Quit immediately and keep recorded results |
@@ -106,7 +107,17 @@ The defaults are 1,000 targets, eight OS worker processes, and a 10-second deadl
 
 ## DNS resolution
 
-Webster uses system DNS by default. Press **d** or start with `webster -dns rotating` to use public resolvers for origin checks. In rotating mode, successive origins are assigned to `1.1.1.1`, `8.8.8.8`, and `9.9.9.9` in round-robin order across all workers. Resolver policies can affect results. For example, Quad9 applies threat blocking at `9.9.9.9`. [Cloudflare](https://developers.cloudflare.com/1.1.1.1/ip-addresses/) · [Google Public DNS](https://developers.google.com/speed/public-dns/docs/using) · [Quad9](https://quad9.net/service/service-addresses-and-features/)
+Webster uses system DNS by default. Press **d** or start with `webster -dns rotating` to use the unfiltered public endpoints below. The rotation assigns one origin per provider, first using the primary column and then the alternate column, across all workers.
+
+| Provider | Primary IPv4 | Alternate IPv4 | Vendor documentation |
+| --- | --- | --- | --- |
+| Cloudflare | `1.1.1.1` | `1.0.0.1` | [1.1.1.1 addresses](https://developers.cloudflare.com/1.1.1.1/ip-addresses/) |
+| Google Public DNS | `8.8.8.8` | `8.8.4.4` | [Public DNS addresses](https://developers.google.com/speed/public-dns/docs/using) |
+| Quad9 | `9.9.9.10` | `149.112.112.10` | [Service without threat blocking](https://quad9.net/service/service-addresses-and-features/) |
+| AdGuard DNS | `94.140.14.140` | `94.140.14.141` | [Non-filtering servers](https://adguard-dns.io/en/public-dns.html) |
+| Control D | `76.76.2.0` | `76.76.10.0` | [Unfiltered free resolvers](https://docs.controld.com/docs/free-dns) |
+
+These operators run large public DNS services. Per-client limits can still apply during sustained scans. [Google Public DNS rate limits](https://developers.google.com/speed/public-dns/docs/isp)
 
 Supply a comma-separated list to choose your own rotation. IPv4 and IPv6 addresses use port 53 by default. To specify a port, use `IP:port` for IPv4 or `[IPv6]:port` for IPv6.
 
@@ -115,6 +126,12 @@ webster -dns rotating -resolvers 1.1.1.1,8.8.8.8
 ```
 
 Each assignment uses one DNS mode for its entire request, including DNS retries. Press **d** again to switch back to system DNS for new assignments. IP-literal origins connect directly. HTTPS checks use the original hostname for TLS and certificate verification.
+
+### Live resolver status
+
+Press **r** during a run to see one row per endpoint. **R/s** is DNS replies per second, **Reply%** is the percentage of completed attempts that received a matching DNS reply, and **RTTms** is the average elapsed time for replies. All three use a rolling 10-second window. A and AAAA queries, retries, and TCP fallback count as separate exchanges. System DNS and IP-literal connections generate no per-endpoint samples.
+
+**Ref** counts explicit `REFUSED` replies. **EDE** counts replies carrying an extended DNS error for blocking, censorship, filtering, or prohibition. Both count as replies, so a resolver can show 100% replies while refusing queries. **TO** counts attempts that timed out. Timeouts alone have several possible causes, including congestion, packet loss, and throttling. Use **↑ / ↓** for cumulative attempts, pending requests, replies, `NXDOMAIN`, `SERVFAIL`, and network errors. [Extended DNS Errors](https://www.rfc-editor.org/rfc/rfc8914.html)
 
 ## Results
 

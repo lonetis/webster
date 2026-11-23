@@ -50,7 +50,7 @@ func validOrigin(raw string) bool {
 		u.RawQuery == "" && !u.ForceQuery && u.Fragment == ""
 }
 
-func probe(transport http.RoundTripper, j job) (r result) {
+func probe(transport http.RoundTripper, j job, emit func(dnsEvent)) (r result) {
 	start := time.Now()
 	defer func() { r.Millis = time.Since(start).Milliseconds() }()
 	if !validOrigin(j.Origin) {
@@ -58,6 +58,11 @@ func probe(transport http.RoundTripper, j job) (r result) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(j.Timeout)*time.Second)
 	defer cancel()
+	if j.Resolver != "" && emit != nil {
+		o := &dnsObserver{ctx: ctx, emit: emit, open: make(map[*dnsAttempt]bool)}
+		defer o.close()
+		ctx = context.WithValue(ctx, dnsObserverKey{}, o)
+	}
 	var handshakeFailed atomic.Bool
 	trace := &httptrace.ClientTrace{TLSHandshakeDone: func(_ tls.ConnectionState, err error) {
 		handshakeFailed.Store(err != nil)
@@ -98,6 +103,11 @@ func probe(transport http.RoundTripper, j job) (r result) {
 	return r
 }
 
+type workerMessage struct {
+	DNS    *dnsEvent `json:",omitempty"`
+	Result *result   `json:",omitempty"`
+}
+
 // Each child handles one assignment at a time. Keep transports scoped to their resolver.
 func serveWorker(in io.Reader, out io.Writer) error {
 	decode, encode := json.NewDecoder(in), json.NewEncoder(out)
@@ -115,9 +125,12 @@ func serveWorker(in io.Reader, out io.Writer) error {
 			transport = newProbeTransport(j.Resolver)
 			transports[j.Resolver] = transport
 		}
-		r := probe(transport, j)
+		r := probe(transport, j, func(e dnsEvent) {
+			// A final Encode below also reports a broken pipe.
+			_ = encode.Encode(workerMessage{DNS: &e})
+		})
 		transport.CloseIdleConnections()
-		if err := encode.Encode(r); err != nil {
+		if err := encode.Encode(workerMessage{Result: &r}); err != nil {
 			return err
 		}
 	}
