@@ -6,6 +6,27 @@ Webster is a terminal connection tester for Chrome User Experience Report (CrUX)
 
 ### Ubuntu
 
+#### Per-user install without sudo
+
+Extract the release for your CPU into `~/.local/bin`. Run the same commands to upgrade.
+
+```sh
+(
+  set -e
+  tmp=$(mktemp -d)
+  trap 'rm -rf "$tmp"' EXIT
+  arch=$(dpkg --print-architecture)
+  curl -fsSL "https://github.com/lonetis/webster/releases/latest/download/webster-linux-$arch.deb" -o "$tmp/webster.deb"
+  dpkg-deb -x "$tmp/webster.deb" "$tmp/pkg"
+  install -Dm755 "$tmp/pkg/usr/bin/webster" "$HOME/.local/bin/webster"
+)
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+If a new shell cannot find `webster`, add the `export PATH` line to your shell profile.
+
+#### System-wide install with APT
+
 Download the package for your CPU and install it with APT. The release provides `amd64` and `arm64` packages.
 
 ```sh
@@ -17,7 +38,7 @@ Run the same commands to upgrade to a newer release.
 
 ### macOS
 
-With Homebrew installed, run these commands on Apple Silicon or Intel Macs.
+With Homebrew installed, run these commands as your regular user on Apple Silicon or Intel Macs. Installing and removing Webster with Homebrew requires no `sudo`.
 
 ```sh
 brew tap lonetis/webster https://github.com/lonetis/webster
@@ -39,7 +60,13 @@ Press **Enter** to check the first 1,000 origins in rank order with the default 
 
 ## Uninstall
 
-**Ubuntu**
+**Ubuntu per-user install**
+
+```sh
+rm "$HOME/.local/bin/webster"
+```
+
+**Ubuntu APT install**
 
 ```sh
 sudo apt remove webster
