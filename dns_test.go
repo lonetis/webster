@@ -3,43 +3,33 @@ package main
 import (
 	"context"
 	"crypto/tls"
-	"encoding/csv"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/zmap/zdns/v2/src/zdns"
 	"golang.org/x/net/dns/dnsmessage"
 )
-
-func TestResolverAddresses(t *testing.T) {
-	got, err := parseResolvers(" 1.1.1.1, 8.8.8.8:5353,2606:4700:4700::1111,[::1]:5353")
-	want := []string{"1.1.1.1:53", "8.8.8.8:5353", "[2606:4700:4700::1111]:53", "[::1]:5353"}
-	if err != nil || !slices.Equal(got, want) {
-		t.Fatalf("addresses = %v, error = %v", got, err)
-	}
-	for _, invalid := range []string{"", "8.8.8.8,", "resolver.test", "127.0.0.1:0", "[::1]:65536"} {
-		if _, err := parseResolvers(invalid); err == nil {
-			t.Errorf("accepted %q", invalid)
-		}
-	}
-}
 
 func testDNS(t *testing.T, nxdomain bool) string {
 	t.Helper()
 	return testDNSReplies(t, func(m *dnsmessage.Message) {
+		if !m.RecursionDesired {
+			t.Error("recursive lookup missing RD bit")
+		}
 		q := m.Questions[0]
 		if nxdomain {
 			m.RCode = dnsmessage.RCodeNameError
 		} else if q.Type == dnsmessage.TypeA {
-			m.Answers = []dnsmessage.Resource{{Header: dnsmessage.ResourceHeader{Name: q.Name, Class: q.Class},
+			m.Answers = []dnsmessage.Resource{{Header: dnsmessage.ResourceHeader{Name: q.Name, Class: q.Class, TTL: 300},
 				Body: &dnsmessage.AResource{A: [4]byte{127, 0, 0, 1}}}}
 		}
 	})
@@ -92,75 +82,119 @@ func TestResolverPreservesHTTPSHostname(t *testing.T) {
 	}))
 	defer server.Close()
 	upstream := testDNS(t, false)
-	transport := newProbeTransport(upstream)
+	transport := newProbeTransport()
 	defer transport.CloseIdleConnections()
 	transport.TLSClientConfig = &tls.Config{RootCAs: server.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs}
 	origin := strings.Replace(server.URL, "127.0.0.1", hostname, 1)
-	got := probe(transport, job{Origin: origin, Timeout: 3, Resolver: upstream}, nil)
+	got := probe(transport, job{Origin: origin, Timeout: 3, Resolver: upstream}, testClient(t), nil)
 	if got.Status != 204 {
 		t.Fatalf("HTTPS result: %+v", got)
 	}
 }
 
-func TestWorkersRotateDNSAndSwitchBackToSystem(t *testing.T) {
-	resolvers := []string{testDNS(t, false), testDNS(t, true)}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) }))
+func testClient(t *testing.T) *workerDNS {
+	t.Helper()
+	w := &workerDNS{}
+	t.Cleanup(w.close)
+	return w
+}
+
+func TestIterativeUsesRootHints(t *testing.T) {
+	// This root fixture is also authoritative for the test name. It will
+	// refuse a recursive query, as a real authoritative server can.
+	root := testDNSReplies(t, func(m *dnsmessage.Message) {
+		if m.RecursionDesired {
+			t.Error("iterative query requested recursion")
+			m.RCode = dnsmessage.RCodeRefused
+			return
+		}
+		m.Authoritative, m.RecursionAvailable = true, false
+		q := m.Questions[0]
+		if q.Type == dnsmessage.TypeAAAA {
+			m.Answers = []dnsmessage.Resource{{Header: dnsmessage.ResourceHeader{Name: q.Name, Class: q.Class},
+				Body: &dnsmessage.AAAAResource{AAAA: netip.IPv6Loopback().As16()}}}
+		}
+	})
+	addr := netip.MustParseAddrPort(root)
+	w := testClient(t)
+	w.config = zdns.NewResolverConfig()
+	w.config.RootNameServersV4 = []zdns.NameServer{{IP: addr.Addr().AsSlice(), Port: addr.Port()}}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	ips, err := w.lookup(ctx, "iterative", "V6.Example.", 3*time.Second, nil)
+	if err != nil || len(ips) != 1 || ips[0] != netip.IPv6Loopback() {
+		t.Fatalf("iterative lookup returned %v, %v", ips, err)
+	}
+}
+
+func TestSwitchDNSDuringScan(t *testing.T) {
+	server := httptest.NewServer(http.NotFoundHandler())
 	defer server.Close()
-	origin := strings.Replace(server.URL, "127.0.0.1", "webster-dns.test", 1)
 	dir := t.TempDir()
 	input := filepath.Join(dir, "input.csv")
-	rows := fmt.Sprintf("origin,rank\n%s,1\n%s,2\n%s,3\n%s,4\n%s,5\n", origin, origin, server.URL, origin, origin)
+	// IP literals keep this test of assignment and live controls offline.
+	rows := fmt.Sprintf("origin,rank\n%s,1\n%s,2\n%s,3\n%s,4\n", server.URL, server.URL, server.URL, server.URL)
 	if err := os.WriteFile(input, []byte(rows), 0600); err != nil {
 		t.Fatal(err)
 	}
-	cfg := settings{targets: 5, processes: 2, timeout: 3, resolvers: resolvers}
-	s, err := startScan(context.Background(), input, dir, cfg, 0)
+	cfg := settings{targets: 4, processes: 1, timeout: 2, mode: "system", provider: "cloudflare"}
+	s, err := startScan(context.Background(), input, cfg, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.finish()
 	a := app{settings: cfg, scan: s}
-	toggle := func() { a.key(context.Background(), tcell.NewEventKey(tcell.KeyRune, 'd', tcell.ModNone)) }
-	toggle() // first two assignments start on separate workers
-	toggle() // the next free worker gets a system-DNS job
-	for s.completed < 5 {
+	key := func(ch rune) { a.key(context.Background(), tcell.NewEventKey(tcell.KeyRune, ch, tcell.ModNone)) }
+	s.fill()
+	for i, want := range []string{"", providers["cloudflare"], providers["google"], "iterative"} {
+		switch i {
+		case 0, 2:
+			key('d')
+		case 1:
+			key('v')
+		}
 		select {
 		case c := <-s.reports:
+			if c.err != nil || c.result.Status != 404 || c.job.Resolver != want {
+				t.Fatalf("assignment %d: %+v", i, c)
+			}
 			s.accept(c)
-			if s.err != nil {
-				t.Fatal(s.err)
-			}
-			if c.dns == nil && s.completed == 1 {
-				toggle()
-			} // resume rotation for the remaining jobs
-		case <-time.After(8 * time.Second):
-			t.Fatal("timed out waiting for worker")
+		case <-time.After(5 * time.Second):
+			t.Fatal("no worker result")
 		}
 	}
-	s.finish()
-	file, err := os.Open(s.file.Name())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer file.Close()
-	records, err := csv.NewReader(file).ReadAll()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(records) != 6 || records[0][7] != "dns_resolver" {
-		t.Fatalf("unexpected CSV rows: %v", records)
-	}
-	want := map[string]string{"1": resolvers[0], "2": resolvers[1], "3": "system", "4": resolvers[0], "5": resolvers[1]}
-	for _, row := range records[1:] {
-		if want[row[1]] != row[7] {
-			t.Fatalf("incorrect assigned resolver: %v", row)
+}
+
+func TestCacheIsScopedToSelectedResolver(t *testing.T) {
+	w := testClient(t)
+	first, second := testDNS(t, false), testDNS(t, true)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var stats resolverStats
+	emit := func(e dnsEvent) { stats.record(e, 0) }
+	for i := 0; i < 2; i++ {
+		ips, err := w.lookup(ctx, first, "cache.webster.test", 2*time.Second, emit)
+		if err != nil || len(ips) != 1 || ips[0].String() != "127.0.0.1" {
+			t.Fatalf("first resolver: %v, %v", ips, err)
 		}
-		if row[7] == resolvers[1] {
-			if row[4] != "dns" || !strings.Contains(row[5], resolvers[1]) {
-				t.Fatalf("expected NXDOMAIN from %s: %v", resolvers[1], row)
-			}
-		} else if row[3] != "204" {
-			t.Fatalf("expected reachable: %v", row)
-		}
+	}
+	if stats.cached != 1 || stats.replies != 3 {
+		t.Fatalf("cache affected measured reply rate: %+v", stats)
+	}
+	ips, err := w.lookup(ctx, second, "cache.webster.test", 2*time.Second, emit)
+	if err == nil || len(ips) != 0 || stats.nxdomain != 1 {
+		t.Fatalf("second resolver: %v, %v, %+v", ips, err, stats)
+	}
+}
+
+func TestAddressAnswersFollowsOnlyOriginAlias(t *testing.T) {
+	records := []any{
+		zdns.Answer{Name: "other.example", RrType: 1, RrClass: 1, Answer: "192.0.2.19"},
+		zdns.Answer{Name: "origin.example", RrType: 5, RrClass: 1, Answer: "Web.Example."},
+		zdns.Answer{Name: "web.example", RrType: 1, RrClass: 1, Answer: "192.0.2.20"},
+	}
+	ips := addressAnswers("origin.example", 1, records)
+	if len(ips) != 1 || ips[0].String() != "192.0.2.20" {
+		t.Fatalf("unexpected HTTP peers: %v", ips)
 	}
 }

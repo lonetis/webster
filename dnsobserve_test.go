@@ -2,8 +2,7 @@ package main
 
 import (
 	"context"
-	"encoding/binary"
-	"io"
+
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -35,10 +34,10 @@ func TestDNSStatuses(t *testing.T) {
 				opt.SetEDNS0(1232, tc.rcode, false)
 				m.Additionals = []dnsmessage.Resource{{Header: opt, Body: &dnsmessage.OPTResource{Options: []dnsmessage.Option{{Code: 15, Data: []byte{0, tc.ede}}}}}}
 			})
-			tr := newProbeTransport(dns)
+			tr := newProbeTransport()
 			defer tr.CloseIdleConnections()
 			var stats resolverStats
-			probe(tr, job{Origin: "http://status.webster.test", Timeout: 3, Resolver: dns}, func(e dnsEvent) { stats.record(e, 5) })
+			probe(tr, job{Origin: "http://status.webster.test", Timeout: 3, Resolver: dns}, testClient(t), func(e dnsEvent) { stats.record(e, 5) })
 			if stats.replies == 0 || stats.finished != stats.attempts || stats.replies != stats.finished {
 				t.Fatalf("wrong attempt/reply counts: %+v", stats)
 			}
@@ -59,16 +58,16 @@ func TestDNSTimeoutAndLiteral(t *testing.T) {
 	}
 	defer silent.Close()
 	endpoint := silent.LocalAddr().String()
-	tr := newProbeTransport(endpoint)
+	tr := newProbeTransport()
 	defer tr.CloseIdleConnections()
 	var stats resolverStats
-	r := probe(tr, job{Origin: "http://silent.webster.test", Timeout: 1, Resolver: endpoint}, func(e dnsEvent) { stats.record(e, 0) })
+	r := probe(tr, job{Origin: "http://silent.webster.test", Timeout: 1, Resolver: endpoint}, testClient(t), func(e dnsEvent) { stats.record(e, 0) })
 	if r.Reason != "timeout" || stats.attempts == 0 || stats.attempts != stats.timeouts || stats.replies != 0 {
 		t.Fatalf("result %+v, stats %+v", r, stats)
 	}
 	httpd := httptest.NewServer(http.NotFoundHandler())
 	defer httpd.Close()
-	r = probe(tr, job{Origin: httpd.URL, Timeout: 1, Resolver: endpoint}, func(e dnsEvent) { t.Errorf("unexpected event for IP literal: %+v", e) })
+	r = probe(tr, job{Origin: httpd.URL, Timeout: 1, Resolver: endpoint}, testClient(t), func(e dnsEvent) { t.Errorf("unexpected event for IP literal: %+v", e) })
 	if r.Status != 404 {
 		t.Fatalf("%+v", r)
 	}
@@ -84,7 +83,9 @@ func TestDNSUpdatesBeforeHTTPCompletes(t *testing.T) {
 	if err := os.WriteFile(path, []byte("origin,rank\n"+origin+",1\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	s, err := startScan(context.Background(), path, dir, settings{targets: 1, processes: 1, timeout: 2, rotatingDNS: true, resolvers: []string{endpoint}}, 1)
+	providers["fixture"] = endpoint
+	t.Cleanup(func() { delete(providers, "fixture") })
+	s, err := startScan(context.Background(), path, settings{targets: 1, processes: 1, timeout: 2, mode: "recursive", provider: "fixture"}, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,36 +109,5 @@ func TestDNSUpdatesBeforeHTTPCompletes(t *testing.T) {
 	stats := s.resolverStats[endpoint]
 	if !sawReply || stats.timeouts != 0 || stats.replies != stats.attempts || s.reasons["timeout"] != 1 {
 		t.Fatalf("DNS/HTTP misattribution: %+v %v", stats, s.reasons)
-	}
-}
-
-func TestDNSTCPSplitFrame(t *testing.T) {
-	// Feed the two-byte TCP length and DNS body in arbitrary pieces.
-	client, peer := net.Pipe()
-	defer client.Close()
-	defer peer.Close()
-	var stats resolverStats
-	o := dnsObserver{ctx: context.Background(), emit: func(e dnsEvent) { stats.record(e, 0) }, open: make(map[*dnsAttempt]bool)}
-	q := dnsmessage.Question{Name: dnsmessage.MustNewName("test.example."), Class: dnsmessage.ClassINET, Type: dnsmessage.TypeAAAA}
-	m := dnsmessage.Message{Header: dnsmessage.Header{ID: 123, Response: true, RCode: dnsmessage.RCodeRefused}, Questions: []dnsmessage.Question{q}}
-	wire, err := m.Pack()
-	if err != nil {
-		t.Fatal(err)
-	}
-	frame := binary.BigEndian.AppendUint16(nil, uint16(len(wire)))
-	frame = append(frame, wire...)
-	c := dnsWireConn{Conn: client, attempt: o.begin(), tcp: true, id: 123, question: q}
-	go func() { _, _ = peer.Write(frame) }()
-	buf := make([]byte, 3)
-	for remaining := len(frame); remaining > 0; {
-		n, err := io.ReadFull(&c, buf[:min(remaining, len(buf))])
-		if err != nil {
-			t.Fatal(err)
-		}
-		remaining -= n
-	}
-	c.Close()
-	if stats.refused != 1 || stats.replies != 1 || stats.finished != 1 {
-		t.Fatalf("%+v", stats)
 	}
 }

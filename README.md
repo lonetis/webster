@@ -38,7 +38,7 @@ Run the same commands to upgrade to a newer release.
 
 ### macOS
 
-With Homebrew installed, run these commands as your regular user on Apple Silicon or Intel Macs. Installing and removing Webster with Homebrew requires no `sudo`.
+With Homebrew installed, run these commands as your regular user on Apple Silicon or Intel Macs running macOS 13 or newer. Installing and removing Webster with Homebrew requires no `sudo`.
 
 ```sh
 brew tap lonetis/webster https://github.com/lonetis/webster
@@ -85,7 +85,7 @@ brew untap lonetis/webster
 rm -f "$HOME/.local/bin/webster" "$HOME/.local/share/webster/launcher" "$HOME/.local/share/webster/webster"
 ```
 
-Snapshots and result CSVs belong to your user account. To reclaim the snapshot space, delete `~/.local/share/webster/data/`. To also discard saved runs, delete `~/.local/share/webster/results/`.
+To reclaim the downloaded snapshot space, delete `~/.local/share/webster/data/`. Versions through 0.3.0 also saved CSVs in `~/.local/share/webster/results/`. You can remove that directory separately if you want to discard those historical runs.
 
 ## Controls
 
@@ -97,41 +97,35 @@ Snapshots and result CSVs belong to your user account. To reclaim the snapshot s
 | p | Enter an exact process count |
 | [ / ] | Decrease or increase the timeout by one second |
 | t | Enter a timeout in whole seconds |
-| d | Toggle system DNS and rotating DNS before or during a run |
+| d | Cycle through system, recursive, and iterative DNS before or during a run |
+| v | Choose the Cloudflare or Google endpoint in recursive mode |
 | r | Open live resolver statistics during a scan or after completion. Use ↑ / ↓ to inspect an endpoint |
 | Enter | Apply an edited value or start from the setup screen |
 | Esc | Cancel an edit, or quit from the dashboard |
-| q / Ctrl+C | Quit immediately and keep recorded results |
+| q / Ctrl+C | Cancel pending checks, print the totals, and quit |
 
 The defaults are 1,000 targets, eight OS worker processes, and a 10-second deadline per request. Each worker handles one origin at a time. Increasing the pool starts more workers. Decreasing it lets excess workers finish their current requests and retire. Timeout changes apply to the next assignment and cover DNS, connection, TLS, and response headers.
 
 ## DNS resolution
 
-Webster uses system DNS by default. Press **d** or start with `webster -dns rotating` to use the unfiltered public endpoints below. The rotation assigns one origin per provider, first using the primary column and then the alternate column, across all workers.
+System DNS is the default. The packaged binary includes ZDNS for recursive and iterative lookups. Press **d** to change modes during setup or a scan. New assignments pick up the change immediately. In-flight checks finish with their original settings. [ZDNS](https://github.com/zmap/zdns)
 
-| Provider | Primary IPv4 | Alternate IPv4 | Vendor documentation |
-| --- | --- | --- | --- |
-| Cloudflare | `1.1.1.1` | `1.0.0.1` | [1.1.1.1 addresses](https://developers.cloudflare.com/1.1.1.1/ip-addresses/) |
-| Google Public DNS | `8.8.8.8` | `8.8.4.4` | [Public DNS addresses](https://developers.google.com/speed/public-dns/docs/using) |
-| Quad9 | `9.9.9.10` | `149.112.112.10` | [Service without threat blocking](https://quad9.net/service/service-addresses-and-features/) |
-| AdGuard DNS | `94.140.14.140` | `94.140.14.141` | [Non-filtering servers](https://adguard-dns.io/en/public-dns.html) |
-| Control D | `76.76.2.0` | `76.76.10.0` | [Unfiltered free resolvers](https://docs.controld.com/docs/free-dns) |
+| Start Webster with | How it resolves origins |
+| --- | --- |
+| `webster -dns system` | Use the operating system resolver |
+| `webster -dns recursive -provider cloudflare` | Ask Cloudflare at `1.1.1.1` to resolve the name |
+| `webster -dns recursive -provider google` | Ask Google at `8.8.8.8` to resolve the name |
+| `webster -dns iterative` | Start with ZDNS's built-in root hints and follow referrals to authoritative servers |
 
-These operators run large public DNS services. Per-client limits can still apply during sustained scans. [Google Public DNS rate limits](https://developers.google.com/speed/public-dns/docs/isp)
+Recursive mode defaults to Cloudflare. Press **v** to choose an endpoint, or use `-provider cloudflare-alt` for `1.0.0.1` or `-provider google-alt` for `8.8.4.4`. Each assignment uses the selected endpoint. These choices replace the old `-dns rotating` and `-resolvers` options. [Cloudflare addresses](https://developers.cloudflare.com/1.1.1.1/ip-addresses/) · [Google addresses](https://developers.google.com/speed/public-dns/docs/using)
 
-Supply a comma-separated list to choose your own rotation. IPv4 and IPv6 addresses use port 53 by default. To specify a port, use `IP:port` for IPv4 or `[IPv6]:port` for IPv6.
-
-```sh
-webster -dns rotating -resolvers 1.1.1.1,8.8.8.8
-```
-
-Each assignment uses one DNS mode for its entire request, including DNS retries. Press **d** again to switch back to system DNS for new assignments. IP-literal origins connect directly. HTTPS checks use the original hostname for TLS and certificate verification.
+Both ZDNS modes look up IPv4 and IPv6 addresses, follow aliases, and connect to the resulting IPs using the original HTTP hostname and TLS certificate checks. DNS traffic uses IPv4 and requires outbound DNS on port 53, including TCP for truncated UDP responses. Iterative mode needs access to root and authoritative servers. IP-literal origins skip DNS. Workers keep a bounded DNS answer cache in memory for the run.
 
 ### Live resolver status
 
-Press **r** during a run to see one row per endpoint. **R/s** is DNS replies per second, **Reply%** is the percentage of completed attempts that received a matching DNS reply, and **RTTms** is the average elapsed time for replies. All three use a rolling 10-second window. A and AAAA queries, retries, and TCP fallback count as separate exchanges. System DNS and IP-literal connections generate no per-endpoint samples.
+Press **r** to see the recursive endpoints and an aggregate row for iterative lookups. Each A or AAAA lookup produces one outcome, including any retries and referrals. **R/s** is lookup replies per second, **Reply%** is the fraction of completed uncached lookups that returned a DNS response code, and **Avgms** is the average elapsed time for those replies. These columns cover the last ten seconds. Fully cached lookups have their own counter. System DNS and IP literals produce no ZDNS samples.
 
-**Ref** counts explicit `REFUSED` replies. **EDE** counts replies carrying an extended DNS error for blocking, censorship, filtering, or prohibition. Both count as replies, so a resolver can show 100% replies while refusing queries. **TO** counts attempts that timed out. Timeouts alone have several possible causes, including congestion, packet loss, and throttling. Use **↑ / ↓** for cumulative attempts, pending requests, replies, `NXDOMAIN`, `SERVFAIL`, and network errors. [Extended DNS Errors](https://www.rfc-editor.org/rfc/rfc8914.html)
+Select a row with **↑ / ↓** to see pending lookups, refusals, policy responses, timeouts, and other errors. **Ref** counts `REFUSED` outcomes. **EDE** counts results carrying an explicit extended DNS error for blocking, censorship, filtering, or prohibition. Both can count as replies. A timeout indicates a missing response and cannot establish why it was lost. [Extended DNS Errors](https://www.rfc-editor.org/rfc/rfc8914.html)
 
 ## Results
 
@@ -139,13 +133,13 @@ Each check sends a single `HEAD /` with certificate validation and records the o
 
 The dashboard shows live reachable and failed checks per second, the six most frequent HTTP status codes, counts by failure reason, and recent origins. The process counter shows active versus requested workers.
 
-Webster writes a unique CSV for each run and prints its path on exit. Packaged installations save it under `~/.local/share/webster/results/`. Each row includes the origin, CrUX rank, outcome, status code, failure reason, error detail, elapsed milliseconds, and the assigned `dns_resolver` (`system` or a resolver endpoint). Quitting cancels outstanding requests.
+Scan results stay in memory. Webster creates no result files, logs, or output directories. On quit it cancels pending checks and prints only the completed, reachable, and failed totals. Webster accepts and ignores the legacy `-results` flag.
 
-Use `webster -input origins.csv` for a local CSV with the header `origin,rank`. Set the snapshot directory with `-data` and the output directory with `-results`.
+To scan without downloading anything, use `webster -input origins.csv` with an existing CSV whose header is `origin,rank`. The separate `webster fetch` command writes the input snapshot. Set its directory with `-data` on both commands.
 
 ## Build from source
 
-With Go 1.24 or newer, run these commands from a checkout.
+Use Go 1.25 or newer. Apple Silicon source builds also need the Xcode Command Line Tools for cgo. From a checkout, run the following commands.
 
 ```sh
 go build -o webster .
@@ -153,4 +147,4 @@ go build -o webster .
 ./webster
 ```
 
-Source builds default to `./data/` and `./results/` in the working directory.
+Source builds read snapshots from `./data/` by default.

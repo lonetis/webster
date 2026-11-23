@@ -35,12 +35,12 @@ func run() error {
 		root = filepath.Join(home, userDataRoot)
 	}
 	data := flags.String("data", filepath.Join(root, "data"), "directory for global CrUX snapshots")
-	var input, results, dnsMode, resolverList string
+	var input, dnsMode, provider string
 	if !fetch {
 		flags.StringVar(&input, "input", "", "use a local origin,rank CSV instead of the downloaded snapshot")
-		flags.StringVar(&results, "results", filepath.Join(root, "results"), "directory for per-origin run results")
-		flags.StringVar(&dnsMode, "dns", "system", "DNS mode for origin checks: system or rotating")
-		flags.StringVar(&resolverList, "resolvers", defaultResolverList(), "comma-separated resolver IPs for rotating mode (optional ports)")
+		flags.String("results", "", "deprecated and ignored (scan results are kept in memory)")
+		flags.StringVar(&dnsMode, "dns", "system", "DNS mode for origin checks: system, recursive or iterative")
+		flags.StringVar(&provider, "provider", "cloudflare", "recursive DNS provider: cloudflare, google, cloudflare-alt or google-alt")
 	}
 	flags.Usage = func() {
 		fmt.Fprintln(flags.Output(), "Usage: webster [options]  |  webster fetch [-data directory]")
@@ -59,14 +59,14 @@ func run() error {
 	if fetch {
 		return fetchDataset(ctx, *data, os.Stdout)
 	}
-	if dnsMode != "system" && dnsMode != "rotating" {
-		return fmt.Errorf("invalid DNS mode %q: choose system or rotating", dnsMode)
+	if dnsMode != "system" && dnsMode != "recursive" && dnsMode != "iterative" {
+		return fmt.Errorf("invalid DNS mode %q: choose system, recursive or iterative", dnsMode)
 	}
-	servers, err := parseResolvers(resolverList)
-	if err != nil {
-		return err
+	if _, ok := providers[provider]; !ok {
+		return fmt.Errorf("unknown recursive provider %q: choose cloudflare, google, cloudflare-alt or google-alt", provider)
 	}
-	config := settings{targets: 1000, processes: 8, timeout: 10, rotatingDNS: dnsMode == "rotating", resolvers: servers}
+	config := settings{targets: 1000, processes: 8, timeout: 10, mode: dnsMode, provider: provider}
+	var err error
 	var meta snapshot
 	if input == "" {
 		input, meta, err = latestDataset(*data)
@@ -74,7 +74,7 @@ func run() error {
 			return err
 		}
 	}
-	return dashboard(ctx, input, results, meta, config)
+	return dashboard(ctx, input, meta, config)
 }
 
 func main() {

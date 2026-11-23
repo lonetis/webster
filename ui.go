@@ -14,7 +14,7 @@ var presets = []int{1000, 10000, 100000, 1000000, 0}
 
 type app struct {
 	settings
-	input, dir           string
+	input                string
 	meta                 snapshot
 	scan                 *scan
 	edit, entry, message string
@@ -22,7 +22,7 @@ type app struct {
 	resolverRow          int
 }
 
-func dashboard(ctx context.Context, input, dir string, meta snapshot, config settings) error {
+func dashboard(ctx context.Context, input string, meta snapshot, config settings) error {
 	screen, err := tcell.NewScreen()
 	if err != nil {
 		return err
@@ -30,10 +30,10 @@ func dashboard(ctx context.Context, input, dir string, meta snapshot, config set
 	if err := screen.Init(); err != nil {
 		return err
 	}
-	a := &app{settings: config, input: input, dir: dir, meta: meta}
+	a := &app{settings: config, input: input, meta: meta}
 	func() { defer screen.Fini(); a.loop(ctx, screen) }()
 	if s := a.scan; s != nil {
-		fmt.Printf("%d completed · %d reachable · %d failed\nResults: %s\n", s.completed, s.reachable, s.completed-s.reachable, s.file.Name())
+		fmt.Printf("%d completed · %d reachable · %d failed\n", s.completed, s.reachable, s.completed-s.reachable)
 		return s.err
 	}
 	return nil
@@ -79,7 +79,6 @@ func (a *app) loop(ctx context.Context, screen tcell.Screen) {
 		case <-ticker.C:
 			if a.running() {
 				a.scan.fill()
-				a.scan.flush()
 			} else {
 				redraw = false
 			}
@@ -143,7 +142,7 @@ func (a *app) key(ctx context.Context, e *tcell.EventKey) bool {
 			a.showResolvers = !a.showResolvers
 			return false
 		case a.showResolvers && e.Key() == tcell.KeyDown:
-			a.resolverRow = min(a.resolverRow+1, len(a.scan.resolvers)-1)
+			a.resolverRow = min(a.resolverRow+1, len(resolverRows)-1)
 			return false
 		case a.showResolvers && e.Key() == tcell.KeyUp:
 			a.resolverRow = max(0, a.resolverRow-1)
@@ -156,7 +155,11 @@ func (a *app) key(ctx context.Context, e *tcell.EventKey) bool {
 	a.message = ""
 	switch {
 	case ch == 'd':
-		a.rotatingDNS = !a.rotatingDNS
+		i := slices.Index(dnsModes, a.mode)
+		a.mode = dnsModes[(i+1)%len(dnsModes)]
+	case ch == 'v' && a.mode == "recursive":
+		i := slices.Index(providerNames, a.provider)
+		a.provider = providerNames[(i+1)%len(providerNames)]
 	case ch == 'p':
 		a.edit, a.entry = "Processes", ""
 	case ch == 't':
@@ -180,7 +183,7 @@ func (a *app) key(ctx context.Context, e *tcell.EventKey) bool {
 		}
 		a.targets = presets[i%len(presets)]
 	case a.scan == nil && e.Key() == tcell.KeyEnter:
-		s, err := startScan(ctx, a.input, a.dir, a.settings, a.meta.Origins)
+		s, err := startScan(ctx, a.input, a.settings, a.meta.Origins)
 		if err != nil {
 			a.message = err.Error()
 			return false

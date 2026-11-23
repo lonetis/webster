@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptrace"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync/atomic"
@@ -17,7 +18,6 @@ import (
 
 type job struct {
 	Origin   string
-	Rank     string
 	Timeout  int    // seconds
 	Resolver string // empty uses system DNS
 }
@@ -29,16 +29,12 @@ type result struct {
 	Millis int64
 }
 
-func newProbeTransport(resolver string) *http.Transport {
-	transport := &http.Transport{
+func newProbeTransport() *http.Transport {
+	return &http.Transport{
 		DisableKeepAlives:      true,
 		ForceAttemptHTTP2:      true,
 		MaxResponseHeaderBytes: 1 << 20,
 	}
-	if resolver != "" {
-		transport.DialContext = resolverDialContext(resolver)
-	}
-	return transport
 }
 
 func validOrigin(raw string) bool {
@@ -50,7 +46,7 @@ func validOrigin(raw string) bool {
 		u.RawQuery == "" && !u.ForceQuery && u.Fragment == ""
 }
 
-func probe(transport http.RoundTripper, j job, emit func(dnsEvent)) (r result) {
+func probe(transport *http.Transport, j job, dnsClient *workerDNS, emit func(dnsEvent)) (r result) {
 	start := time.Now()
 	defer func() { r.Millis = time.Since(start).Milliseconds() }()
 	if !validOrigin(j.Origin) {
@@ -58,11 +54,6 @@ func probe(transport http.RoundTripper, j job, emit func(dnsEvent)) (r result) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(j.Timeout)*time.Second)
 	defer cancel()
-	if j.Resolver != "" && emit != nil {
-		o := &dnsObserver{ctx: ctx, emit: emit, open: make(map[*dnsAttempt]bool)}
-		defer o.close()
-		ctx = context.WithValue(ctx, dnsObserverKey{}, o)
-	}
 	var handshakeFailed atomic.Bool
 	trace := &httptrace.ClientTrace{TLSHandshakeDone: func(_ tls.ConnectionState, err error) {
 		handshakeFailed.Store(err != nil)
@@ -70,6 +61,22 @@ func probe(transport http.RoundTripper, j job, emit func(dnsEvent)) (r result) {
 	req, err := http.NewRequestWithContext(httptrace.WithClientTrace(ctx, trace), http.MethodHead, j.Origin, nil)
 	if err != nil {
 		return result{Reason: "input", Detail: err.Error()}
+	}
+	host := req.URL.Hostname()
+	if _, ipErr := netip.ParseAddr(host); ipErr != nil && j.Resolver != "" {
+		ips, err := dnsClient.lookup(ctx, j.Resolver, host, time.Duration(j.Timeout)*time.Second, emit)
+		if err != nil {
+			reason := "dns"
+			if errors.Is(err, context.DeadlineExceeded) {
+				reason = "timeout"
+			}
+			return result{Reason: reason, Detail: err.Error()}
+		}
+		transport = transport.Clone()
+		transport.DialContext = func(_ context.Context, network, address string) (net.Conn, error) {
+			return dialResolved(ctx, network, address, ips)
+		}
+		defer transport.CloseIdleConnections()
 	}
 	req.Header.Set("User-Agent", "Webster/1.0 (origin reachability check)")
 	resp, err := transport.RoundTrip(req)
@@ -81,12 +88,6 @@ func probe(transport http.RoundTripper, j job, emit func(dnsEvent)) (r result) {
 	r.Detail = err.Error()
 	var dns *net.DNSError
 	isDNS := errors.As(err, &dns)
-	if isDNS && j.Resolver != "" {
-		// net.Resolver reports the OS nameserver even when its Dial hook overrides it.
-		detail := *dns
-		detail.Server = j.Resolver
-		r.Detail = detail.Error()
-	}
 	var netErr net.Error
 	switch {
 	case errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &netErr) && netErr.Timeout()):
@@ -108,10 +109,13 @@ type workerMessage struct {
 	Result *result   `json:",omitempty"`
 }
 
-// Each child handles one assignment at a time. Keep transports scoped to their resolver.
+// Each child handles one assignment at a time.
 func serveWorker(in io.Reader, out io.Writer) error {
 	decode, encode := json.NewDecoder(in), json.NewEncoder(out)
-	transports := make(map[string]*http.Transport)
+	transport := newProbeTransport()
+	defer transport.CloseIdleConnections()
+	var dnsClient workerDNS
+	defer dnsClient.close()
 	for {
 		var j job
 		if err := decode.Decode(&j); err != nil {
@@ -120,16 +124,10 @@ func serveWorker(in io.Reader, out io.Writer) error {
 			}
 			return err
 		}
-		transport := transports[j.Resolver]
-		if transport == nil {
-			transport = newProbeTransport(j.Resolver)
-			transports[j.Resolver] = transport
-		}
-		r := probe(transport, j, func(e dnsEvent) {
+		r := probe(transport, j, &dnsClient, func(e dnsEvent) {
 			// A final Encode below also reports a broken pipe.
 			_ = encode.Encode(workerMessage{DNS: &e})
 		})
-		transport.CloseIdleConnections()
 		if err := encode.Encode(workerMessage{Result: &r}); err != nil {
 			return err
 		}

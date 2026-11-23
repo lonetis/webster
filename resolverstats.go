@@ -13,7 +13,7 @@ type dnsBucket struct {
 	rtt                       time.Duration
 }
 type resolverStats struct {
-	attempts, finished, replies                                  int
+	attempts, finished, replies, cached                          int
 	refused, policy, servfail, nxdomain, timeouts, networkErrors int
 	last, lastIssue                                              string
 	issueSecond                                                  int
@@ -29,9 +29,13 @@ func (s *resolverStats) record(e dnsEvent, second int) {
 	if b.second != second {
 		*b = dnsBucket{second: second}
 	}
-	b.finished++
 	s.finished++
 	s.last = e.Status
+	if e.Status == "cached" {
+		s.cached++
+		return
+	}
+	b.finished++
 	if e.Reply {
 		s.replies++
 		b.replies++
@@ -81,9 +85,6 @@ func endpointLabel(endpoint string) string {
 
 func (a *app) drawResolvers(v canvas) {
 	s := a.scan
-	if len(s.resolvers) == 0 {
-		return
-	}
 	now := time.Now()
 	if !s.ended.IsZero() {
 		now = s.ended
@@ -91,10 +92,10 @@ func (a *app) drawResolvers(v canvas) {
 	elapsed := now.Sub(s.started)
 	sec := int(elapsed / time.Second)
 	seconds := max(0.001, elapsed.Seconds()-float64(max(0, sec-dnsWindow+1)))
-	v.text(2, 2, strong, "DNS resolvers · "+s.dnsMode()+" mode")
-	hint := "Last 10s rates and RTT · counts since run start"
-	if !s.rotatingDNS && len(s.resolverStats) == 0 {
-		hint = "Endpoint metrics require rotating DNS"
+	v.text(2, 2, strong, "DNS resolvers · "+s.dnsLabel()+" mode")
+	hint := "Last 10s lookup rates and duration · counts since run start"
+	if s.resolver() == "" && len(s.resolverStats) == 0 {
+		hint = "Choose recursive or iterative DNS for lookup metrics"
 	}
 	v.text(2, 3, quiet, hint)
 	wide := v.w >= 72
@@ -102,13 +103,13 @@ func (a *app) drawResolvers(v canvas) {
 	headers := "   R/s  Reply%   Ref   TO  Last"
 	if wide {
 		addrWidth = min(45, v.w-52)
-		headers = "    R/s  Reply%   RTTms   Ref  EDE    TO  Last"
+		headers = "    R/s  Reply%   Avgms   Ref  EDE    TO  Last"
 	}
-	v.text(2, 5, quiet, fmt.Sprintf("%-*s%s", addrWidth, "Endpoint", headers))
+	v.text(2, 5, quiet, fmt.Sprintf("%-*s%s", addrWidth, "Resolver", headers))
 	rows := v.h - 13
 	first := max(0, a.resolverRow-rows+1)
-	for i := first; i < min(len(s.resolvers), first+rows); i++ {
-		endpoint := s.resolvers[i]
+	for i := first; i < min(len(resolverRows), first+rows); i++ {
+		endpoint := resolverRows[i]
 		r := s.resolverStats[endpoint]
 		if r == nil {
 			r = &resolverStats{}
@@ -143,20 +144,20 @@ func (a *app) drawResolvers(v canvas) {
 		}
 		v.text(2, 6+i-first, style, line)
 	}
-	endpoint := s.resolvers[a.resolverRow]
+	endpoint := resolverRows[a.resolverRow]
 	stats := s.resolverStats[endpoint]
 	if stats == nil {
 		stats = &resolverStats{}
 	}
 	label := endpoint
-	for _, p := range publicResolvers {
-		if endpoint == p.primary+":53" || endpoint == p.alternate+":53" {
-			label = p.name + " · " + endpoint
+	for _, p := range providerNames {
+		if providers[p] == endpoint {
+			label = p + " · " + endpoint
 			break
 		}
 	}
-	v.text(2, v.h-7, strong, fmt.Sprintf("%d/%d  %s", a.resolverRow+1, len(s.resolvers), label))
-	v.text(2, v.h-6, plain, fmt.Sprintf("Attempts %d   Pending %d   Replies %d", stats.attempts, stats.attempts-stats.finished, stats.replies))
+	v.text(2, v.h-7, strong, fmt.Sprintf("%d/%d  %s", a.resolverRow+1, len(resolverRows), label))
+	v.text(2, v.h-6, plain, fmt.Sprintf("Lookups %d   Pending %d   Replies %d   Cached %d", stats.attempts, stats.attempts-stats.finished, stats.replies, stats.cached))
 	v.text(2, v.h-5, plain, fmt.Sprintf("REFUSED %d   Policy EDE %d   Timeouts %d", stats.refused, stats.policy, stats.timeouts))
 	v.text(2, v.h-4, plain, fmt.Sprintf("SERVFAIL %d   NXDOMAIN %d   Net errors %d", stats.servfail, stats.nxdomain, stats.networkErrors))
 	if stats.lastIssue != "" {

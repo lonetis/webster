@@ -96,14 +96,16 @@ func (a *app) draw(screen tcell.Screen) {
 			{"Targets", targets, "← → presets   n exact"},
 			{"Processes", number(a.processes), "+ / − adjust   p set"},
 			{"Timeout", fmt.Sprintf("%d s", a.timeout), "[ / ] adjust   t set"},
-			{"DNS", a.dnsMode(), "d toggle"},
+			{"DNS", a.mode, "d cycle"},
 		} {
 			y := 9 + i*2
 			v.text(2, y, plain, row[0])
 			v.text(15, y, accent, row[1])
 			v.text(29, y, quiet, row[2])
 		}
-		if h > 19 {
+		if a.mode == "recursive" {
+			v.text(2, 16, plain, "Provider     "+a.provider+"   v change")
+		} else if h > 19 {
 			v.text(2, 17, quiet, "One HEAD request per origin · first response")
 		}
 		keys = "Enter start run    q quit"
@@ -111,11 +113,11 @@ func (a *app) draw(screen tcell.Screen) {
 		a.drawResolvers(v)
 		keys = "↑/↓ endpoint   r overview   q quit"
 		if a.running() {
-			keys = "↑/↓ endpoint   d DNS mode   r overview   q quit"
+			keys = "↑/↓ row   d mode   v provider   r overview   q quit"
 		}
 	} else {
 		a.drawScan(v)
-		keys = "+/- processes  [ ] timeout  p/t set  d DNS  q quit"
+		keys = "+/- processes  [ ] timeout  d DNS  v provider  q quit"
 		if !a.running() {
 			keys = "r resolvers  q quit"
 		}
@@ -161,7 +163,7 @@ func (a *app) drawScan(v canvas) {
 	v.text(2+filled, 3, quiet, strings.Repeat("─", width-filled))
 	rate := float64(s.completed) / max(0.001, elapsed.Seconds())
 	v.text(2, 4, plain, fmt.Sprintf("Processes %d/%d   Timeout %ds   %.1f/s avg", len(s.workers), s.processes, s.timeout, rate))
-	dnsLine := "DNS " + s.dnsMode() + "   r resolver status"
+	dnsLine := "DNS " + s.dnsLabel() + "   r resolver status"
 	if len(s.resolverStats) > 0 {
 		var refused, policy, timeouts int
 		for _, r := range s.resolverStats {
@@ -169,7 +171,7 @@ func (a *app) drawScan(v canvas) {
 			policy += r.policy
 			timeouts += r.timeouts
 		}
-		dnsLine = fmt.Sprintf("DNS %s  Ref %d  EDE %d  TO %d  r details", s.dnsMode(), refused, policy, timeouts)
+		dnsLine = fmt.Sprintf("DNS %s  Ref %d  EDE %d  TO %d  r details", s.dnsLabel(), refused, policy, timeouts)
 	}
 	v.text(2, 5, plain, dnsLine)
 

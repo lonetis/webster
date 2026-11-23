@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/csv"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -46,7 +45,8 @@ func TestResizeTimeoutAndQuit(t *testing.T) {
 	if err := os.WriteFile(path, []byte(input.String()), 0600); err != nil {
 		t.Fatal(err)
 	}
-	s, err := startScan(context.Background(), path, dir, settings{targets: 8, processes: 1, timeout: 10}, 0)
+	t.Chdir(dir)
+	s, err := startScan(context.Background(), path, settings{targets: 8, processes: 1, timeout: 10}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,23 +100,12 @@ func TestResizeTimeoutAndQuit(t *testing.T) {
 	if time.Since(start) > 2*time.Second {
 		t.Fatal("cancellation did not stop children promptly")
 	}
-	file, err := os.Open(s.file.Name())
-	if err != nil {
-		t.Fatal(err)
+	files, err := os.ReadDir(dir)
+	if err != nil || len(files) != 1 || files[0].Name() != "input.csv" {
+		t.Fatalf("unexpected run files: %v, %v", files, err)
 	}
-	defer file.Close()
-	rows, err := csv.NewReader(file).ReadAll()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(rows) != 5 || rows[4][4] != "timeout" {
-		t.Fatalf("unexpected partial CSV: %v", rows)
-	}
-	ranks := map[string]bool{}
-	for _, row := range rows[1:] {
-		ranks[row[1]] = true
-	}
-	if len(ranks) != 4 {
-		t.Fatalf("duplicate input assignment: %v", rows)
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != input.String() || s.completed != 4 {
+		t.Fatalf("changed input or incorrect completion count: %v, %d", err, s.completed)
 	}
 }

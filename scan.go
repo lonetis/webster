@@ -9,22 +9,24 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"strconv"
 	"sync"
 	"time"
 )
 
 type settings struct {
 	targets, processes, timeout int
-	rotatingDNS                 bool
-	resolvers                   []string
+	mode, provider              string
 }
 
-func (c settings) dnsMode() string {
-	if c.rotatingDNS {
-		return "rotating"
+func (c settings) resolver() string {
+	switch c.mode {
+	case "recursive":
+		return providers[c.provider]
+	case "iterative":
+		return "iterative"
+	default:
+		return ""
 	}
-	return "system"
 }
 
 type worker chan job
@@ -45,7 +47,6 @@ type observation struct {
 type scan struct {
 	settings
 	goal, issued, completed, reachable int
-	nextResolver                       int
 	eof                                bool
 	started, ended                     time.Time
 	statuses                           map[int]int
@@ -54,19 +55,18 @@ type scan struct {
 	resolverStats                      map[string]*resolverStats
 	recent                             []observation
 
-	executable   string
-	ctx          context.Context
-	cancel       context.CancelFunc
-	workers      map[worker]struct{}
-	reports      chan completion
-	children     sync.WaitGroup
-	source, file *os.File
-	reader       *csv.Reader
-	writer       *csv.Writer
-	err          error
+	executable string
+	ctx        context.Context
+	cancel     context.CancelFunc
+	workers    map[worker]struct{}
+	reports    chan completion
+	children   sync.WaitGroup
+	source     *os.File
+	reader     *csv.Reader
+	err        error
 }
 
-func startScan(parent context.Context, input, dir string, config settings, knownCount int) (*scan, error) {
+func startScan(parent context.Context, input string, config settings, knownCount int) (*scan, error) {
 	executable, err := os.Executable()
 	if err != nil {
 		return nil, err
@@ -81,27 +81,6 @@ func startScan(parent context.Context, input, dir string, config settings, known
 		source.Close()
 		return nil, errors.New("input must be a CrUX CSV with header origin,rank")
 	}
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		source.Close()
-		return nil, err
-	}
-	file, err := os.CreateTemp(dir, time.Now().Format("20060102-150405")+"-*.csv")
-	if err != nil {
-		source.Close()
-		return nil, err
-	}
-	writer := csv.NewWriter(file)
-	err = writer.Write([]string{"origin", "rank", "outcome", "status_code", "reason", "detail", "elapsed_ms", "dns_resolver"})
-	writer.Flush()
-	if err == nil {
-		err = writer.Error()
-	}
-	if err != nil {
-		source.Close()
-		file.Close()
-		os.Remove(file.Name())
-		return nil, err
-	}
 	ctx, cancel := context.WithCancel(parent)
 	goal := config.targets
 	if knownCount > 0 && (goal == 0 || goal > knownCount) {
@@ -112,7 +91,7 @@ func startScan(parent context.Context, input, dir string, config settings, known
 		statuses: make(map[int]int), reasons: make(map[string]int), resolverStats: make(map[string]*resolverStats),
 		executable: executable, ctx: ctx, cancel: cancel,
 		workers: make(map[worker]struct{}), reports: make(chan completion),
-		source: source, reader: reader, file: file, writer: writer,
+		source: source, reader: reader,
 	}, nil
 }
 
@@ -132,12 +111,7 @@ func (s *scan) next() (job, bool) {
 		return job{}, false
 	}
 	s.issued++
-	j := job{Origin: row[0], Rank: row[1], Timeout: s.timeout}
-	if s.rotatingDNS {
-		j.Resolver = s.resolvers[s.nextResolver]
-		s.nextResolver = (s.nextResolver + 1) % len(s.resolvers)
-	}
-	return j, true
+	return job{Origin: row[0], Timeout: s.timeout, Resolver: s.resolver()}, true
 }
 
 func (s *scan) fill() {
@@ -229,14 +203,11 @@ func (s *scan) accept(c completion) {
 		return
 	}
 	r := c.result
-	status, outcome := "", "failed"
 	b := s.bucket(time.Now())
 	if r.Status > 0 {
 		s.reachable++
 		s.statuses[r.Status]++
 		b.reached++
-		status = strconv.Itoa(r.Status)
-		outcome = "reachable"
 	} else {
 		s.reasons[r.Reason]++
 		b.failed++
@@ -248,11 +219,6 @@ func (s *scan) accept(c completion) {
 	s.recent = append(s.recent, observation{})
 	copy(s.recent[1:], s.recent)
 	s.recent[0] = observation{c.job.Origin, r}
-	resolver := c.job.Resolver
-	if resolver == "" {
-		resolver = "system"
-	}
-	s.err = s.writer.Write([]string{c.job.Origin, c.job.Rank, outcome, status, r.Reason, r.Detail, strconv.FormatInt(r.Millis, 10), resolver})
 	if s.err == nil && len(s.workers) <= s.processes {
 		if j, ok := s.next(); ok {
 			c.worker <- j
@@ -272,13 +238,6 @@ func (s *scan) bucket(t time.Time) *bucket {
 	return b
 }
 
-func (s *scan) flush() {
-	s.writer.Flush()
-	if err := s.writer.Error(); err != nil && s.err == nil {
-		s.err = err
-	}
-}
-
 func (s *scan) finish() {
 	if !s.ended.IsZero() {
 		return
@@ -288,8 +247,4 @@ func (s *scan) finish() {
 	s.children.Wait()
 	clear(s.workers)
 	s.source.Close()
-	s.flush()
-	if err := s.file.Close(); err != nil && s.err == nil {
-		s.err = err
-	}
 }
