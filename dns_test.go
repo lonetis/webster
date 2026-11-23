@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -137,7 +138,7 @@ func TestSwitchDNSDuringScan(t *testing.T) {
 	if err := os.WriteFile(input, []byte(rows), 0600); err != nil {
 		t.Fatal(err)
 	}
-	cfg := settings{targets: 4, processes: 1, timeout: 2, mode: "system", provider: "cloudflare"}
+	cfg := settings{targets: 4, processes: 1, timeout: 2, mode: "system", pool: providerPool{"cloudflare"}}
 	s, err := startScan(context.Background(), input, cfg, 4)
 	if err != nil {
 		t.Fatal(err)
@@ -196,5 +197,89 @@ func TestAddressAnswersFollowsOnlyOriginAlias(t *testing.T) {
 	ips := addressAnswers("origin.example", 1, records)
 	if len(ips) != 1 || ips[0].String() != "192.0.2.20" {
 		t.Fatalf("unexpected HTTP peers: %v", ips)
+	}
+}
+
+func TestRecursivePoolSelection(t *testing.T) {
+	subset, err := parseProviderPool("google, cloudflare-alt, google")
+	if err != nil || !slices.Equal(subset, providerPool{"google", "cloudflare-alt"}) {
+		t.Fatalf("subset = %v, error = %v", subset, err)
+	}
+	for _, invalid := range []string{"", "google,", "all,google", "missing"} {
+		if _, err := parseProviderPool(invalid); err == nil {
+			t.Errorf("accepted %q", invalid)
+		}
+	}
+	cfg := settings{mode: "recursive", pool: providerNames}
+	a := app{settings: cfg, customPool: subset, scan: &scan{settings: cfg, poolIndex: 3}}
+	key := tcell.NewEventKey(tcell.KeyRune, 'v', tcell.ModNone)
+	for _, want := range []string{"google,cloudflare-alt", "cloudflare", "google", "cloudflare-alt", "google-alt", "all"} {
+		a.key(context.Background(), key)
+		if a.scan.pool.label() != want || a.scan.poolIndex != 0 {
+			t.Fatalf("expected %s at start of pool, got %+v", want, a.scan.settings)
+		}
+	}
+}
+
+func TestAllResolversAcrossWorkers(t *testing.T) {
+	pool, err := parseProviderPool("all")
+	if err != nil || !slices.Equal(pool, providerNames) {
+		t.Fatalf("all = %v, error = %v", pool, err)
+	}
+	for i, name := range pool {
+		old := providers[name]
+		t.Cleanup(func() { providers[name] = old })
+		providers[name] = testDNSReplies(t, func(m *dnsmessage.Message) {
+			q := m.Questions[0]
+			var n int
+			if _, err := fmt.Sscanf(q.Name.String(), "origin%d.webster.test.", &n); err != nil || n%len(pool) != i {
+				t.Errorf("%s received unexpected question %s", name, q.Name)
+			}
+			if i == 1 {
+				m.RCode = dnsmessage.RCodeRefused
+			} else if q.Type == dnsmessage.TypeA {
+				m.Answers = []dnsmessage.Resource{{Header: dnsmessage.ResourceHeader{Name: q.Name, Class: q.Class},
+					Body: &dnsmessage.AResource{A: [4]byte{127, 0, 0, 1}}}}
+			}
+		})
+	}
+	httpd := httptest.NewServer(http.NotFoundHandler())
+	defer httpd.Close()
+	var input strings.Builder
+	input.WriteString("origin,rank\n")
+	for n := 0; n < 8; n++ {
+		origin := strings.Replace(httpd.URL, "127.0.0.1", fmt.Sprintf("origin%d.webster.test", n), 1)
+		fmt.Fprintf(&input, "%s,%d\n", origin, n)
+	}
+	path := filepath.Join(t.TempDir(), "input.csv")
+	if err := os.WriteFile(path, []byte(input.String()), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := settings{targets: 8, processes: 3, timeout: 3, mode: "recursive", pool: pool}
+	s, err := startScan(context.Background(), path, cfg, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.finish()
+	s.fill()
+	for s.completed < 8 {
+		select {
+		case report := <-s.reports:
+			s.accept(report)
+			if s.err != nil {
+				t.Fatal(s.err)
+			}
+		case <-time.After(6 * time.Second):
+			t.Fatal("missing worker completion")
+		}
+	}
+	if s.statuses[404] != 6 || s.reasons["dns"] != 2 {
+		t.Fatalf("outcomes: %v %v", s.statuses, s.reasons)
+	}
+	for i, name := range pool {
+		r := s.resolverStats[providers[name]]
+		if r == nil || (i == 1 && r.refused != 2) || (i != 1 && (r.replies != 4 || r.refused != 0)) {
+			t.Errorf("%s metrics: %+v", name, r)
+		}
 	}
 }

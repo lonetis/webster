@@ -23,9 +23,35 @@ var providers = map[string]string{
 }
 var resolverRows = []string{providers["cloudflare"], providers["google"], providers["cloudflare-alt"], providers["google-alt"], "iterative"}
 
+type providerPool []string
+
+func parseProviderPool(value string) (providerPool, error) {
+	if strings.TrimSpace(value) == "all" {
+		return providerNames, nil
+	}
+	var names providerPool
+	for part := range strings.SplitSeq(value, ",") {
+		name := strings.TrimSpace(part)
+		if _, ok := providers[name]; !ok {
+			return nil, fmt.Errorf("unknown recursive provider %q: choose all or a list from %s", name, strings.Join(providerNames, ", "))
+		}
+		if !slices.Contains(names, name) {
+			names = append(names, name)
+		}
+	}
+	return names, nil
+}
+
+func (p providerPool) label() string {
+	if len(p) == len(providerNames) {
+		return "all"
+	}
+	return strings.Join(p, ",")
+}
+
 func (c settings) dnsLabel() string {
 	if c.mode == "recursive" {
-		return "recursive " + c.provider
+		return "recursive " + c.pool.label()
 	}
 	return c.mode
 }

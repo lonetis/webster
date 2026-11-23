@@ -20,6 +20,7 @@ type app struct {
 	edit, entry, message string
 	showResolvers        bool
 	resolverRow          int
+	customPool           providerPool
 }
 
 func dashboard(ctx context.Context, input string, meta snapshot, config settings) error {
@@ -31,6 +32,9 @@ func dashboard(ctx context.Context, input string, meta snapshot, config settings
 		return err
 	}
 	a := &app{settings: config, input: input, meta: meta}
+	if len(config.pool) > 1 && len(config.pool) < len(providerNames) {
+		a.customPool = config.pool
+	}
 	func() { defer screen.Fini(); a.loop(ctx, screen) }()
 	if s := a.scan; s != nil {
 		fmt.Printf("%d completed · %d reachable · %d failed\n", s.completed, s.reachable, s.completed-s.reachable)
@@ -158,8 +162,19 @@ func (a *app) key(ctx context.Context, e *tcell.EventKey) bool {
 		i := slices.Index(dnsModes, a.mode)
 		a.mode = dnsModes[(i+1)%len(dnsModes)]
 	case ch == 'v' && a.mode == "recursive":
-		i := slices.Index(providerNames, a.provider)
-		a.provider = providerNames[(i+1)%len(providerNames)]
+		switch {
+		case len(a.pool) == 1:
+			i := slices.Index(providerNames, a.pool[0]) + 1
+			if i == len(providerNames) {
+				a.pool = providerNames
+			} else {
+				a.pool = providerPool{providerNames[i]}
+			}
+		case len(a.pool) == len(providerNames) && len(a.customPool) > 0:
+			a.pool = a.customPool
+		default:
+			a.pool = providerPool{providerNames[0]}
+		}
 	case ch == 'p':
 		a.edit, a.entry = "Processes", ""
 	case ch == 't':
@@ -196,6 +211,9 @@ func (a *app) key(ctx context.Context, e *tcell.EventKey) bool {
 
 func (a *app) applySettings() {
 	if a.running() {
+		if !slices.Equal(a.scan.pool, a.pool) {
+			a.scan.poolIndex = 0
+		}
 		a.scan.settings = a.settings
 		a.scan.fill()
 	}

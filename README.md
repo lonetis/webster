@@ -98,7 +98,7 @@ To reclaim the downloaded snapshot space, delete `~/.local/share/webster/data/`.
 | [ / ] | Decrease or increase the timeout by one second |
 | t | Enter a timeout in whole seconds |
 | d | Cycle through system, recursive, and iterative DNS before or during a run |
-| v | Choose the Cloudflare or Google endpoint in recursive mode |
+| v | Cycle through the recursive endpoints, all four, and any subset supplied at startup |
 | r | Open live resolver statistics during a scan or after completion. Use ↑ / ↓ to inspect an endpoint |
 | Enter | Apply an edited value or start from the setup screen |
 | Esc | Cancel an edit, or quit from the dashboard |
@@ -115,9 +115,11 @@ System DNS is the default. The packaged binary includes ZDNS for recursive and i
 | `webster -dns system` | Use the operating system resolver |
 | `webster -dns recursive -provider cloudflare` | Ask Cloudflare at `1.1.1.1` to resolve the name |
 | `webster -dns recursive -provider google` | Ask Google at `8.8.8.8` to resolve the name |
+| `webster -dns recursive -provider all` | Spread successive origins across all four Cloudflare and Google endpoints |
+| `webster -dns recursive -provider cloudflare,google` | Alternate between the two primary endpoints |
 | `webster -dns iterative` | Start with ZDNS's built-in root hints and follow referrals to authoritative servers |
 
-Recursive mode defaults to Cloudflare. Press **v** to choose an endpoint, or use `-provider cloudflare-alt` for `1.0.0.1` or `-provider google-alt` for `8.8.4.4`. Each assignment uses the selected endpoint. These choices replace the old `-dns rotating` and `-resolvers` options. [Cloudflare addresses](https://developers.cloudflare.com/1.1.1.1/ip-addresses/) · [Google addresses](https://developers.google.com/speed/public-dns/docs/using)
+Recursive mode defaults to Cloudflare. With `-provider all`, Webster assigns origins to `1.1.1.1`, `8.8.8.8`, `1.0.0.1` (`cloudflare-alt`), and `8.8.4.4` (`google-alt`) in turn across the entire worker pool. A comma-separated subset uses the order you give it. Each origin sends its A and AAAA lookups and any retries to its assigned endpoint. Press **v** to change the selection during a scan and **r** to see each endpoint’s replies, refusals, and timeouts. [Cloudflare addresses](https://developers.cloudflare.com/1.1.1.1/ip-addresses/) · [Google addresses](https://developers.google.com/speed/public-dns/docs/using)
 
 Both ZDNS modes look up IPv4 and IPv6 addresses, follow aliases, and connect to the resulting IPs using the original HTTP hostname and TLS certificate checks. DNS traffic uses IPv4 and requires outbound DNS on port 53, including TCP for truncated UDP responses. Iterative mode needs access to root and authoritative servers. IP-literal origins skip DNS. Workers keep a bounded DNS answer cache in memory for the run.
 

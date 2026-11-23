@@ -104,7 +104,7 @@ func (a *app) draw(screen tcell.Screen) {
 			v.text(29, y, quiet, row[2])
 		}
 		if a.mode == "recursive" {
-			v.text(2, 16, plain, "Provider     "+a.provider+"   v change")
+			v.text(2, 16, plain, "v Providers  "+a.pool.label())
 		} else if h > 19 {
 			v.text(2, 17, quiet, "One HEAD request per origin · first response")
 		}

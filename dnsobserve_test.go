@@ -85,7 +85,7 @@ func TestDNSUpdatesBeforeHTTPCompletes(t *testing.T) {
 	}
 	providers["fixture"] = endpoint
 	t.Cleanup(func() { delete(providers, "fixture") })
-	s, err := startScan(context.Background(), path, settings{targets: 1, processes: 1, timeout: 2, mode: "recursive", provider: "fixture"}, 1)
+	s, err := startScan(context.Background(), path, settings{targets: 1, processes: 1, timeout: 2, mode: "recursive", pool: providerPool{"fixture"}}, 1)
 	if err != nil {
 		t.Fatal(err)
 	}

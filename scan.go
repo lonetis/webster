@@ -15,13 +15,16 @@ import (
 
 type settings struct {
 	targets, processes, timeout int
-	mode, provider              string
+	mode                        string
+	pool                        providerPool
 }
 
-func (c settings) resolver() string {
-	switch c.mode {
+func (s *scan) nextResolver() string {
+	switch s.mode {
 	case "recursive":
-		return providers[c.provider]
+		name := s.pool[s.poolIndex]
+		s.poolIndex = (s.poolIndex + 1) % len(s.pool)
+		return providers[name]
 	case "iterative":
 		return "iterative"
 	default:
@@ -47,6 +50,7 @@ type observation struct {
 type scan struct {
 	settings
 	goal, issued, completed, reachable int
+	poolIndex                          int
 	eof                                bool
 	started, ended                     time.Time
 	statuses                           map[int]int
@@ -111,7 +115,7 @@ func (s *scan) next() (job, bool) {
 		return job{}, false
 	}
 	s.issued++
-	return job{Origin: row[0], Timeout: s.timeout, Resolver: s.resolver()}, true
+	return job{Origin: row[0], Timeout: s.timeout, Resolver: s.nextResolver()}, true
 }
 
 func (s *scan) fill() {

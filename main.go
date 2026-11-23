@@ -40,7 +40,7 @@ func run() error {
 		flags.StringVar(&input, "input", "", "use a local origin,rank CSV instead of the downloaded snapshot")
 		flags.String("results", "", "deprecated and ignored (scan results are kept in memory)")
 		flags.StringVar(&dnsMode, "dns", "system", "DNS mode for origin checks: system, recursive or iterative")
-		flags.StringVar(&provider, "provider", "cloudflare", "recursive DNS provider: cloudflare, google, cloudflare-alt or google-alt")
+		flags.StringVar(&provider, "provider", "cloudflare", "recursive DNS endpoints: all, or a comma-separated list of cloudflare, google, cloudflare-alt and google-alt")
 	}
 	flags.Usage = func() {
 		fmt.Fprintln(flags.Output(), "Usage: webster [options]  |  webster fetch [-data directory]")
@@ -62,11 +62,11 @@ func run() error {
 	if dnsMode != "system" && dnsMode != "recursive" && dnsMode != "iterative" {
 		return fmt.Errorf("invalid DNS mode %q: choose system, recursive or iterative", dnsMode)
 	}
-	if _, ok := providers[provider]; !ok {
-		return fmt.Errorf("unknown recursive provider %q: choose cloudflare, google, cloudflare-alt or google-alt", provider)
+	pool, err := parseProviderPool(provider)
+	if err != nil {
+		return err
 	}
-	config := settings{targets: 1000, processes: 8, timeout: 10, mode: dnsMode, provider: provider}
-	var err error
+	config := settings{targets: 1000, processes: 8, timeout: 10, mode: dnsMode, pool: pool}
 	var meta snapshot
 	if input == "" {
 		input, meta, err = latestDataset(*data)

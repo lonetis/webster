@@ -94,7 +94,7 @@ func (a *app) drawResolvers(v canvas) {
 	seconds := max(0.001, elapsed.Seconds()-float64(max(0, sec-dnsWindow+1)))
 	v.text(2, 2, strong, "DNS resolvers · "+s.dnsLabel()+" mode")
 	hint := "Last 10s lookup rates and duration · counts since run start"
-	if s.resolver() == "" && len(s.resolverStats) == 0 {
+	if s.mode == "system" && len(s.resolverStats) == 0 {
 		hint = "Choose recursive or iterative DNS for lookup metrics"
 	}
 	v.text(2, 3, quiet, hint)
