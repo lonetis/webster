@@ -37,7 +37,7 @@ func dashboard(ctx context.Context, input string, meta snapshot, config settings
 	}
 	func() { defer screen.Fini(); a.loop(ctx, screen) }()
 	if s := a.scan; s != nil {
-		fmt.Printf("%d completed · %d reachable · %d failed\n", s.completed, s.reachable, s.completed-s.reachable)
+		fmt.Printf("%d completed · %s\n", s.completed, s.outcomeTotals())
 		return s.err
 	}
 	return nil
@@ -158,6 +158,8 @@ func (a *app) key(ctx context.Context, e *tcell.EventKey) bool {
 	}
 	a.message = ""
 	switch {
+	case a.scan == nil && ch == 'm':
+		a.dnsOnly = !a.dnsOnly
 	case ch == 'd':
 		i := slices.Index(dnsModes, a.mode)
 		a.mode = dnsModes[(i+1)%len(dnsModes)]

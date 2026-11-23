@@ -20,13 +20,15 @@ type job struct {
 	Origin   string
 	Timeout  int    // seconds
 	Resolver string // empty uses system DNS
+	DNSOnly  bool   `json:",omitempty"`
 }
 
 type result struct {
-	Status int
-	Reason string
-	Detail string
-	Millis int64
+	Status   int
+	Resolved bool `json:",omitempty"`
+	Reason   string
+	Detail   string
+	Millis   int64
 }
 
 func newProbeTransport() *http.Transport {
@@ -37,23 +39,45 @@ func newProbeTransport() *http.Transport {
 	}
 }
 
-func validOrigin(raw string) bool {
+func originHostname(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
-		return false
+		return ""
 	}
-	return u.User == nil && (u.EscapedPath() == "" || u.EscapedPath() == "/") &&
-		u.RawQuery == "" && !u.ForceQuery && u.Fragment == ""
+	if u.User != nil || (u.EscapedPath() != "" && u.EscapedPath() != "/") || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+		return ""
+	}
+	return u.Hostname()
 }
 
 func probe(transport *http.Transport, j job, dnsClient *workerDNS, emit func(dnsEvent)) (r result) {
 	start := time.Now()
 	defer func() { r.Millis = time.Since(start).Milliseconds() }()
-	if !validOrigin(j.Origin) {
+	host := originHostname(j.Origin)
+	if host == "" {
 		return result{Reason: "input", Detail: "expected an HTTP(S) origin"}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(j.Timeout)*time.Second)
+	timeout := time.Duration(j.Timeout) * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
+	_, ipErr := netip.ParseAddr(host)
+	if j.DNSOnly && ipErr == nil {
+		return result{Reason: skippedLiteral}
+	}
+	if ipErr != nil && (j.DNSOnly || j.Resolver != "") {
+		ips, err := dnsClient.lookup(ctx, j.Resolver, host, timeout, j.DNSOnly, emit)
+		if err != nil {
+			return lookupFailure(err, j.DNSOnly)
+		}
+		if j.DNSOnly {
+			return result{Resolved: true}
+		}
+		transport = transport.Clone()
+		transport.DialContext = func(_ context.Context, network, address string) (net.Conn, error) {
+			return dialResolved(ctx, network, address, ips)
+		}
+		defer transport.CloseIdleConnections()
+	}
 	var handshakeFailed atomic.Bool
 	trace := &httptrace.ClientTrace{TLSHandshakeDone: func(_ tls.ConnectionState, err error) {
 		handshakeFailed.Store(err != nil)
@@ -61,22 +85,6 @@ func probe(transport *http.Transport, j job, dnsClient *workerDNS, emit func(dns
 	req, err := http.NewRequestWithContext(httptrace.WithClientTrace(ctx, trace), http.MethodHead, j.Origin, nil)
 	if err != nil {
 		return result{Reason: "input", Detail: err.Error()}
-	}
-	host := req.URL.Hostname()
-	if _, ipErr := netip.ParseAddr(host); ipErr != nil && j.Resolver != "" {
-		ips, err := dnsClient.lookup(ctx, j.Resolver, host, time.Duration(j.Timeout)*time.Second, emit)
-		if err != nil {
-			reason := "dns"
-			if errors.Is(err, context.DeadlineExceeded) {
-				reason = "timeout"
-			}
-			return result{Reason: reason, Detail: err.Error()}
-		}
-		transport = transport.Clone()
-		transport.DialContext = func(_ context.Context, network, address string) (net.Conn, error) {
-			return dialResolved(ctx, network, address, ips)
-		}
-		defer transport.CloseIdleConnections()
 	}
 	req.Header.Set("User-Agent", "Webster/1.0 (origin reachability check)")
 	resp, err := transport.RoundTrip(req)

@@ -122,7 +122,7 @@ func TestIterativeUsesRootHints(t *testing.T) {
 	w.config.RootNameServersV4 = []zdns.NameServer{{IP: addr.Addr().AsSlice(), Port: addr.Port()}}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	ips, err := w.lookup(ctx, "iterative", "V6.Example.", 3*time.Second, nil)
+	ips, err := w.lookup(ctx, "iterative", "V6.Example.", 3*time.Second, false, nil)
 	if err != nil || len(ips) != 1 || ips[0] != netip.IPv6Loopback() {
 		t.Fatalf("iterative lookup returned %v, %v", ips, err)
 	}
@@ -174,7 +174,7 @@ func TestCacheIsScopedToSelectedResolver(t *testing.T) {
 	var stats resolverStats
 	emit := func(e dnsEvent) { stats.record(e, 0) }
 	for i := 0; i < 2; i++ {
-		ips, err := w.lookup(ctx, first, "cache.webster.test", 2*time.Second, emit)
+		ips, err := w.lookup(ctx, first, "cache.webster.test", 2*time.Second, false, emit)
 		if err != nil || len(ips) != 1 || ips[0].String() != "127.0.0.1" {
 			t.Fatalf("first resolver: %v, %v", ips, err)
 		}
@@ -182,7 +182,7 @@ func TestCacheIsScopedToSelectedResolver(t *testing.T) {
 	if stats.cached != 1 || stats.replies != 3 {
 		t.Fatalf("cache affected measured reply rate: %+v", stats)
 	}
-	ips, err := w.lookup(ctx, second, "cache.webster.test", 2*time.Second, emit)
+	ips, err := w.lookup(ctx, second, "cache.webster.test", 2*time.Second, false, emit)
 	if err == nil || len(ips) != 0 || stats.nxdomain != 1 {
 		t.Fatalf("second resolver: %v, %v, %+v", ips, err, stats)
 	}

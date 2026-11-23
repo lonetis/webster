@@ -91,8 +91,8 @@ func TestResizeTimeoutAndQuit(t *testing.T) {
 	// gets sixty seconds, so returning quickly from finish requires cancellation.
 	s.timeout = 60
 	accept()
-	if s.reasons["timeout"] != 1 || s.reachable != 3 {
-		t.Fatalf("unexpected outcomes: %d reached, %v", s.reachable, s.reasons)
+	if s.reasons["timeout"] != 1 || s.succeeded != 3 {
+		t.Fatalf("unexpected outcomes: %d reached, %v", s.succeeded, s.reasons)
 	}
 	arrival()
 	start := time.Now()

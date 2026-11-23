@@ -17,6 +17,16 @@ type settings struct {
 	targets, processes, timeout int
 	mode                        string
 	pool                        providerPool
+	dnsOnly                     bool
+}
+
+const skippedLiteral = "IP literal"
+
+func (c settings) successLabel() string {
+	if c.dnsOnly {
+		return "Resolved"
+	}
+	return "Reachable"
 }
 
 func (s *scan) nextResolver() string {
@@ -49,15 +59,15 @@ type observation struct {
 
 type scan struct {
 	settings
-	goal, issued, completed, reachable int
-	poolIndex                          int
-	eof                                bool
-	started, ended                     time.Time
-	statuses                           map[int]int
-	reasons                            map[string]int
-	history                            [60]bucket
-	resolverStats                      map[string]*resolverStats
-	recent                             []observation
+	goal, issued, completed, succeeded, skipped int
+	poolIndex                                   int
+	eof                                         bool
+	started, ended                              time.Time
+	statuses                                    map[int]int
+	reasons                                     map[string]int
+	history                                     [60]bucket
+	resolverStats                               map[string]*resolverStats
+	recent                                      []observation
 
 	executable string
 	ctx        context.Context
@@ -68,6 +78,15 @@ type scan struct {
 	source     *os.File
 	reader     *csv.Reader
 	err        error
+}
+
+func (s *scan) failed() int { return s.completed - s.succeeded - s.skipped }
+
+func (s *scan) outcomeTotals() string {
+	if s.dnsOnly {
+		return fmt.Sprintf("%d resolved · %d failed · %d skipped", s.succeeded, s.failed(), s.skipped)
+	}
+	return fmt.Sprintf("%d reachable · %d failed", s.succeeded, s.failed())
 }
 
 func startScan(parent context.Context, input string, config settings, knownCount int) (*scan, error) {
@@ -115,7 +134,7 @@ func (s *scan) next() (job, bool) {
 		return job{}, false
 	}
 	s.issued++
-	return job{Origin: row[0], Timeout: s.timeout, Resolver: s.nextResolver()}, true
+	return job{Origin: row[0], Timeout: s.timeout, Resolver: s.nextResolver(), DNSOnly: s.dnsOnly}, true
 }
 
 func (s *scan) fill() {
@@ -208,11 +227,16 @@ func (s *scan) accept(c completion) {
 	}
 	r := c.result
 	b := s.bucket(time.Now())
-	if r.Status > 0 {
-		s.reachable++
-		s.statuses[r.Status]++
+	switch {
+	case r.Resolved || r.Status > 0:
+		s.succeeded++
+		if r.Status > 0 {
+			s.statuses[r.Status]++
+		}
 		b.reached++
-	} else {
+	case r.Reason == skippedLiteral:
+		s.skipped++
+	default:
 		s.reasons[r.Reason]++
 		b.failed++
 	}

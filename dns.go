@@ -66,10 +66,11 @@ type dnsEvent struct {
 // Each worker performs lookups serially. ZDNS keys recursive cache entries by
 // nameserver and keeps the iterative delegation cache in a separate namespace.
 type workerDNS struct {
-	config    *zdns.ResolverConfig
-	resolver  *zdns.Resolver
-	iterative bool
-	timeout   time.Duration
+	config        *zdns.ResolverConfig
+	resolver      *zdns.Resolver
+	iterative     bool
+	singleAttempt bool
+	timeout       time.Duration
 }
 
 func (w *workerDNS) close() {
@@ -79,32 +80,46 @@ func (w *workerDNS) close() {
 	}
 }
 
-func (w *workerDNS) prepare(iterative bool, timeout time.Duration) error {
-	if w.resolver != nil && w.iterative == iterative && w.timeout == timeout {
+func (w *workerDNS) prepare(iterative, singleAttempt bool, timeout time.Duration) error {
+	if w.resolver != nil && w.iterative == iterative && w.timeout == timeout && w.singleAttempt == singleAttempt {
 		return nil
 	}
 	w.close()
 	if w.config == nil {
 		w.config = zdns.NewResolverConfig()
 	}
-	w.config.ShouldRecycleSockets = false
-	w.config.Timeout = timeout
-	w.config.NetworkTimeout = timeout
+	config := *w.config
+	config.ShouldRecycleSockets = false
+	config.Timeout = timeout
+	config.NetworkTimeout = timeout
 	if iterative {
-		w.config.NetworkTimeout = min(timeout, 2*time.Second)
+		config.NetworkTimeout = min(timeout, 2*time.Second)
 	}
+	if singleAttempt {
+		config.Retries = 0
+	}
+	w.singleAttempt = singleAttempt
 	w.iterative, w.timeout = iterative, timeout
 	var err error
-	w.resolver, err = zdns.InitResolver(w.config)
+	w.resolver, err = zdns.InitResolver(&config)
 	return err
 }
 
-func (w *workerDNS) lookup(ctx context.Context, endpoint, host string, timeout time.Duration, emit func(dnsEvent)) ([]netip.Addr, error) {
+func (w *workerDNS) lookup(ctx context.Context, endpoint, host string, timeout time.Duration, onlyA bool, emit func(dnsEvent)) ([]netip.Addr, error) {
 	name, err := idna.Lookup.ToASCII(strings.TrimSuffix(host, "."))
 	if err != nil {
 		return nil, err
 	}
 	name = strings.ToLower(name)
+	// HTTP checks using system DNS delegate resolution to net/http. Only
+	// DNS-only checks use the system resolver here.
+	if endpoint == "" {
+		ips, err := net.DefaultResolver.LookupNetIP(ctx, "ip4", name+".")
+		if err == nil && len(ips) == 0 {
+			err = &net.DNSError{Name: name, Err: "NODATA"}
+		}
+		return ips, err
+	}
 	var ns *zdns.NameServer
 	if endpoint != "iterative" {
 		addr, err := netip.ParseAddrPort(endpoint)
@@ -113,18 +128,22 @@ func (w *workerDNS) lookup(ctx context.Context, endpoint, host string, timeout t
 		}
 		ns = &zdns.NameServer{IP: addr.Addr().AsSlice(), Port: addr.Port()}
 	}
-	if err := w.prepare(ns == nil, timeout); err != nil {
+	if err := w.prepare(ns == nil, onlyA && ns != nil, timeout); err != nil {
 		return nil, err
 	}
 
 	var addresses []netip.Addr
 	var lookupErr error
-	for _, typ := range []uint16{dns.TypeA, dns.TypeAAAA} {
+	types := []uint16{dns.TypeA, dns.TypeAAAA}
+	if onlyA {
+		types = types[:1]
+	}
+	for _, typ := range types {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		// Reserve time for the other family and HTTP if one family is silent.
-		queryCtx, cancel := context.WithTimeout(ctx, timeout/2)
+		// A single-family check can spend the full origin deadline on DNS.
+		queryCtx, cancel := context.WithTimeout(ctx, timeout/time.Duration(len(types)))
 		q := zdns.Question{Name: name, Type: typ, Class: dns.ClassINET}
 		if emit != nil {
 			emit(dnsEvent{Status: "start"})
@@ -149,7 +168,7 @@ func (w *workerDNS) lookup(ctx context.Context, endpoint, host string, timeout t
 		} else if event.Status == "timeout" {
 			lookupErr = context.DeadlineExceeded
 		} else if lookupErr == nil {
-			lookupErr = fmt.Errorf("%s returned %s for %s", endpoint, event.Status, name)
+			lookupErr = &net.DNSError{Name: name, Server: endpoint, Err: event.Status}
 		}
 		if status == zdns.StatusNXDomain || status == zdns.StatusRefused {
 			break
@@ -159,9 +178,26 @@ func (w *workerDNS) lookup(ctx context.Context, endpoint, host string, timeout t
 		return addresses, nil
 	}
 	if lookupErr == nil {
-		lookupErr = fmt.Errorf("%s returned no addresses for %s", endpoint, name)
+		lookupErr = &net.DNSError{Name: name, Server: endpoint, Err: "NODATA"}
 	}
 	return nil, lookupErr
+}
+
+func lookupFailure(err error, dnsOnly bool) result {
+	r := result{Reason: "dns", Detail: err.Error()}
+	var netErr net.Error
+	var dnsErr *net.DNSError
+	switch {
+	case errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &netErr) && netErr.Timeout()):
+		r.Reason = "timeout"
+	case dnsOnly && errors.As(err, &dnsErr):
+		if _, ok := dns.StringToRcode[dnsErr.Err]; ok || dnsErr.Err == "NODATA" {
+			r.Reason = dnsErr.Err
+		} else if dnsErr.IsNotFound {
+			r.Reason = "not found"
+		}
+	}
+	return r
 }
 
 func lookupEvent(res *zdns.SingleQueryResult, trace zdns.Trace, status zdns.Status, ctx context.Context, err error) dnsEvent {

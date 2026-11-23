@@ -36,7 +36,9 @@ func run() error {
 	}
 	data := flags.String("data", filepath.Join(root, "data"), "directory for global CrUX snapshots")
 	var input, dnsMode, provider string
+	var dnsOnly bool
 	if !fetch {
+		flags.BoolVar(&dnsOnly, "dns-only", false, "only look up each origin's IPv4 address (DNS A record)")
 		flags.StringVar(&input, "input", "", "use a local origin,rank CSV instead of the downloaded snapshot")
 		flags.String("results", "", "deprecated and ignored (scan results are kept in memory)")
 		flags.StringVar(&dnsMode, "dns", "system", "DNS mode for origin checks: system, recursive or iterative")
@@ -66,7 +68,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	config := settings{targets: 1000, processes: 8, timeout: 10, mode: dnsMode, pool: pool}
+	config := settings{targets: 1000, processes: 8, timeout: 10, mode: dnsMode, pool: pool, dnsOnly: dnsOnly}
 	var meta snapshot
 	if input == "" {
 		input, meta, err = latestDataset(*data)

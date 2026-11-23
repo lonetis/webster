@@ -58,6 +58,18 @@ The first command downloads the latest global CrUX snapshot to `~/.local/share/w
 
 Press **Enter** to check the first 1,000 origins in rank order with the default settings. To try just a handful, press **n**, enter a count, and press **Enter** to apply it before starting.
 
+### DNS-only checks
+
+```sh
+webster -dns-only
+webster -dns-only -dns recursive -provider all
+webster -dns-only -dns iterative
+```
+
+DNS-only mode performs one logical IPv4 address (A) lookup for each origin hostname and finishes before opening a connection to the origin. Select it with `-dns-only` or press **m** on the setup screen. The dashboard counts a hostname as **resolved** when the lookup returns an IPv4 address. IPv6-only names have no A record. Origins containing an IP address are **skipped**.
+
+Recursive DNS-only checks use the first outcome from the assigned endpoint. Cached answers can avoid a wire query, and aliases, referrals, or TCP fallback can require additional DNS exchanges. System mode also honors local host records. In recursive and iterative modes, press **r** for live ZDNS statistics. The default HTTP check remains available on the setup screen.
+
 ## Uninstall
 
 **Ubuntu per-user install**
@@ -93,6 +105,7 @@ To reclaim the downloaded snapshot space, delete `~/.local/share/webster/data/`.
 | --- | --- |
 | ← / → | Choose 1k, 10k, 100k, 1m, or all origins before starting |
 | n | Enter an exact target count before starting |
+| m | Switch between HTTP HEAD and DNS-only (A) checks before starting |
 | + / - | Increase or decrease the process count |
 | p | Enter an exact process count |
 | [ / ] | Decrease or increase the timeout by one second |
@@ -119,9 +132,9 @@ System DNS is the default. The packaged binary includes ZDNS for recursive and i
 | `webster -dns recursive -provider cloudflare,google` | Alternate between the two primary endpoints |
 | `webster -dns iterative` | Start with ZDNS's built-in root hints and follow referrals to authoritative servers |
 
-Recursive mode defaults to Cloudflare. With `-provider all`, Webster assigns origins to `1.1.1.1`, `8.8.8.8`, `1.0.0.1` (`cloudflare-alt`), and `8.8.4.4` (`google-alt`) in turn across the entire worker pool. A comma-separated subset uses the order you give it. Each origin sends its A and AAAA lookups and any retries to its assigned endpoint. Press **v** to change the selection during a scan and **r** to see each endpoint’s replies, refusals, and timeouts. [Cloudflare addresses](https://developers.cloudflare.com/1.1.1.1/ip-addresses/) · [Google addresses](https://developers.google.com/speed/public-dns/docs/using)
+Recursive mode defaults to Cloudflare. With `-provider all`, Webster assigns origins to `1.1.1.1`, `8.8.8.8`, `1.0.0.1` (`cloudflare-alt`), and `8.8.4.4` (`google-alt`) in turn across the entire worker pool. A comma-separated subset uses the order you give it. Each origin sends its address lookups and any retries to its assigned endpoint. Press **v** to change the selection during a scan and **r** to see each endpoint’s replies, refusals, and timeouts. [Cloudflare addresses](https://developers.cloudflare.com/1.1.1.1/ip-addresses/) · [Google addresses](https://developers.google.com/speed/public-dns/docs/using)
 
-Both ZDNS modes look up IPv4 and IPv6 addresses, follow aliases, and connect to the resulting IPs using the original HTTP hostname and TLS certificate checks. DNS traffic uses IPv4 and requires outbound DNS on port 53, including TCP for truncated UDP responses. Iterative mode needs access to root and authoritative servers. IP-literal origins skip DNS. Workers keep a bounded DNS answer cache in memory for the run.
+For HTTP checks, both ZDNS modes look up IPv4 and IPv6 addresses, follow aliases, and connect to the resulting IPs using the original HTTP hostname and TLS certificate checks. DNS traffic uses IPv4 and requires outbound DNS on port 53, including TCP for truncated UDP responses. Iterative mode needs access to root and authoritative servers. IP-literal origins skip DNS. Workers keep a bounded DNS answer cache in memory for the run.
 
 ### Live resolver status
 
@@ -131,11 +144,11 @@ Select a row with **↑ / ↓** to see pending lookups, refusals, policy respons
 
 ## Results
 
-Each check sends a single `HEAD /` with certificate validation and records the origin's own HTTP status. Redirects, 4xx, and 5xx all count as reachable. Failed checks include a reason and error detail.
+Each HTTP check sends a single `HEAD /` with certificate validation and records the origin's own HTTP status. Redirects, 4xx, and 5xx all count as reachable. Failed checks include a reason and error detail.
 
 The dashboard shows live reachable and failed checks per second, the six most frequent HTTP status codes, counts by failure reason, and recent origins. The process counter shows active versus requested workers.
 
-Scan results stay in memory. Webster creates no result files, logs, or output directories. On quit it cancels pending checks and prints only the completed, reachable, and failed totals. Webster accepts and ignores the legacy `-results` flag.
+Scan results stay in memory. Webster creates no result files, logs, or output directories. On quit it cancels pending checks and prints the totals for the selected check. Webster accepts and ignores the legacy `-results` flag.
 
 To scan without downloading anything, use `webster -input origins.csv` with an existing CSV whose header is `origin,rank`. The separate `webster fetch` command writes the input snapshot. Set its directory with `-data` on both commands.
 

@@ -1,9 +1,11 @@
 package main
 
 import (
+	"cmp"
 	"fmt"
+	"maps"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -64,12 +66,16 @@ func (a *app) draw(screen tcell.Screen) {
 		}
 	}
 	v.text(2, 0, accent, "WEBSTER")
-	v.text(12, 0, quiet, "Origin connection tester")
+	title := "Origin connection tester"
+	if a.dnsOnly {
+		title = "DNS-only check (A)"
+	}
+	v.text(12, 0, quiet, title)
 	v.text(max(2, w-2-len(state)), 0, strong, state)
 	if w < 52 || h < 19 {
 		v.text(1, 3, plain, "Resize to 52 × 19 for the dashboard")
 		if s := a.scan; s != nil {
-			v.text(1, 5, plain, fmt.Sprintf("%d reachable · %d failed", s.reachable, s.completed-s.reachable))
+			v.text(1, 5, plain, s.outcomeTotals())
 		}
 		v.text(1, h-1, quiet, "q quit")
 		return
@@ -92,21 +98,24 @@ func (a *app) draw(screen tcell.Screen) {
 		if a.targets == 0 {
 			targets = "All origins"
 		}
+		check := "HTTP HEAD"
+		if a.dnsOnly {
+			check = "DNS only (A)"
+		}
 		for i, row := range [][3]string{
 			{"Targets", targets, "← → presets   n exact"},
 			{"Processes", number(a.processes), "+ / − adjust   p set"},
 			{"Timeout", fmt.Sprintf("%d s", a.timeout), "[ / ] adjust   t set"},
 			{"DNS", a.mode, "d cycle"},
+			{"Check", check, "m switch"},
 		} {
-			y := 9 + i*2
+			y := 8 + i*2
 			v.text(2, y, plain, row[0])
 			v.text(15, y, accent, row[1])
 			v.text(29, y, quiet, row[2])
 		}
 		if a.mode == "recursive" {
-			v.text(2, 16, plain, "v Providers  "+a.pool.label())
-		} else if h > 19 {
-			v.text(2, 17, quiet, "One HEAD request per origin · first response")
+			v.text(2, 15, plain, "v Providers  "+a.pool.label())
 		}
 		keys = "Enter start run    q quit"
 	} else if a.showResolvers {
@@ -191,7 +200,7 @@ func (a *app) drawScan(v canvas) {
 		}
 	}
 	v.text(2, 6, quiet, fmt.Sprintf("CHECKS / SECOND   %ds window · peak %d/s", n, peak))
-	v.text(2, 7, good, "Reachable")
+	v.text(2, 7, good, s.successLabel())
 	v.text(2, 8, bad, "Failed")
 	levels := []rune("·▁▂▃▄▅▆▇█")
 	spark := func(value int) string {
@@ -204,23 +213,11 @@ func (a *app) drawScan(v canvas) {
 		v.text(13+i, 7, good, spark(b.reached))
 		v.text(13+i, 8, bad, spark(b.failed))
 	}
-	v.text(15+n, 7, strong, number(s.reachable))
-	v.text(15+n, 8, strong, number(s.completed-s.reachable))
+	v.text(15+n, 7, strong, number(s.succeeded))
+	v.text(15+n, 8, strong, number(s.failed()))
 
 	right := v.w / 2
-	v.text(2, 10, quiet, "HTTP STATUS")
 	v.text(right, 10, quiet, "FAILURE REASONS")
-	codes := make([]int, 0, len(s.statuses))
-	for code := range s.statuses {
-		codes = append(codes, code)
-	}
-	sort.Slice(codes, func(i, j int) bool {
-		a, b := s.statuses[codes[i]], s.statuses[codes[j]]
-		if a == b {
-			return codes[i] < codes[j]
-		}
-		return a > b
-	})
 	bar := func(x, y, space int, label string, count, total int, style tcell.Style) {
 		num := number(count)
 		v.text(x, y, plain, label)
@@ -231,14 +228,24 @@ func (a *app) drawScan(v canvas) {
 			v.text(x+11, y, style, strings.Repeat("▰", lenBar))
 		}
 	}
-	if len(codes) == 0 {
-		v.text(2, 11, quiet, "Awaiting response")
+	reasons := []string{"dns", "connection", "tls", "timeout", "protocol", "input"}
+	if s.dnsOnly {
+		v.text(2, 10, quiet, "DNS A LOOKUPS")
+		bar(2, 11, right-5, "Resolved", s.succeeded, s.completed, good)
+		bar(2, 12, right-5, "Failed", s.failed(), s.completed, bad)
+		bar(2, 13, right-5, "Skipped", s.skipped, s.completed, quiet)
+		reasons = topCounts(s.reasons)
+	} else {
+		v.text(2, 10, quiet, "HTTP STATUS")
+		if len(s.statuses) == 0 {
+			v.text(2, 11, quiet, "Awaiting response")
+		}
+		for i, code := range topCounts(s.statuses) {
+			bar(2, 11+i, right-5, strconv.Itoa(code), s.statuses[code], s.succeeded, good)
+		}
 	}
-	for i, code := range codes[:min(len(codes), 6)] {
-		bar(2, 11+i, right-5, strconv.Itoa(code), s.statuses[code], s.reachable, good)
-	}
-	for i, reason := range []string{"dns", "connection", "tls", "timeout", "protocol", "input"} {
-		bar(right, 11+i, v.w-right-3, reason, s.reasons[reason], s.completed-s.reachable, bad)
+	for i, reason := range reasons {
+		bar(right, 11+i, v.w-right-3, reason, s.reasons[reason], s.failed(), bad)
 	}
 	if v.h > 21 {
 		v.text(2, 18, quiet, "RECENT ORIGINS")
@@ -248,7 +255,12 @@ func (a *app) drawScan(v canvas) {
 				break
 			}
 			label, style := r.Reason, bad
-			if r.Status > 0 {
+			switch {
+			case r.Resolved:
+				label, style = "resolved", good
+			case r.Reason == skippedLiteral:
+				label, style = "skipped", quiet
+			case r.Status > 0:
 				label, style = strconv.Itoa(r.Status), good
 			}
 			ms := fmt.Sprintf("%d ms", r.Millis)
@@ -262,4 +274,15 @@ func (a *app) drawScan(v canvas) {
 			v.text(v.w-2-len(ms), y, quiet, ms)
 		}
 	}
+}
+
+func topCounts[K cmp.Ordered](counts map[K]int) []K {
+	keys := slices.Collect(maps.Keys(counts))
+	slices.SortFunc(keys, func(a, b K) int {
+		if counts[a] == counts[b] {
+			return cmp.Compare(a, b)
+		}
+		return cmp.Compare(counts[b], counts[a])
+	})
+	return keys[:min(len(keys), 6)]
 }
