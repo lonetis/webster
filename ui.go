@@ -21,12 +21,13 @@ type app struct {
 	showResolvers        bool
 	resolverRow          int
 	customPool           providerPool
+	speedOptions         speedOptions
 	speed                *speedProgress
 	speedEvents          <-chan speedProgress
 	cancelSpeed          context.CancelFunc
 }
 
-func dashboard(ctx context.Context, input string, meta snapshot, config settings) error {
+func dashboard(ctx context.Context, input string, meta snapshot, config settings, speed speedOptions) error {
 	screen, err := tcell.NewScreen()
 	if err != nil {
 		return err
@@ -34,7 +35,7 @@ func dashboard(ctx context.Context, input string, meta snapshot, config settings
 	if err := screen.Init(); err != nil {
 		return err
 	}
-	a := &app{settings: config, input: input, meta: meta}
+	a := &app{settings: config, input: input, meta: meta, speedOptions: speed}
 	if len(config.pool) > 1 && len(config.pool) < len(providerNames) {
 		a.customPool = config.pool
 	}
@@ -114,10 +115,10 @@ func (a *app) running() bool { return a.scan != nil && a.scan.ended.IsZero() }
 func (a *app) startSpeed(ctx context.Context) {
 	runCtx, cancel := context.WithCancel(ctx)
 	events := make(chan speedProgress, 1)
-	a.speed = &speedProgress{phase: "HTTPS latency"}
+	a.speed = &speedProgress{phase: "endpoint discovery"}
 	a.speedEvents, a.cancelSpeed = events, cancel
 	go func() {
-		measureSpeed(runCtx, speedTestURL, func(s speedProgress) {
+		measureSpeed(runCtx, speedTestURL, a.speedOptions, func(s speedProgress) {
 			select {
 			case events <- s:
 			case <-runCtx.Done():

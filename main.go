@@ -23,8 +23,10 @@ func run() error {
 	defer cancel()
 	if len(args) > 0 && args[0] == "speedtest" {
 		flags := flag.NewFlagSet("webster speedtest", flag.ContinueOnError)
+		options := speedFlags(flags, "")
 		flags.Usage = func() {
-			fmt.Fprintln(flags.Output(), "Usage: webster speedtest\nMeasure HTTPS latency, download and upload speed to Cloudflare.")
+			fmt.Fprintln(flags.Output(), "Usage: webster speedtest [options]\nMeasure HTTPS latency, download and upload speed to Apple’s network-quality service.")
+			flags.PrintDefaults()
 		}
 		if err := flags.Parse(args[1:]); err != nil {
 			if err == flag.ErrHelp {
@@ -35,7 +37,10 @@ func run() error {
 		if flags.NArg() != 0 {
 			return fmt.Errorf("unexpected speedtest argument %q", flags.Arg(0))
 		}
-		return printSpeedTest(ctx, os.Stdout)
+		if err := options.validate(); err != nil {
+			return err
+		}
+		return printSpeedTest(ctx, os.Stdout, *options)
 	}
 	fetch := len(args) > 0 && args[0] == "fetch"
 	if fetch {
@@ -53,7 +58,9 @@ func run() error {
 	data := flags.String("data", filepath.Join(root, "data"), "directory for global CrUX snapshots")
 	var input, dnsMode, provider string
 	var dnsOnly bool
+	var speed *speedOptions
 	if !fetch {
+		speed = speedFlags(flags, "speed-")
 		flags.BoolVar(&dnsOnly, "dns-only", false, "only look up each origin's IPv4 address (DNS A record)")
 		flags.StringVar(&input, "input", "", "use a local origin,rank CSV instead of the downloaded snapshot")
 		flags.String("results", "", "deprecated and ignored (scan results are kept in memory)")
@@ -77,6 +84,9 @@ func run() error {
 	if fetch {
 		return fetchDataset(ctx, *data, os.Stdout)
 	}
+	if err := speed.validate(); err != nil {
+		return err
+	}
 	if dnsMode != "system" && dnsMode != "recursive" && dnsMode != "iterative" {
 		return fmt.Errorf("invalid DNS mode %q: choose system, recursive or iterative", dnsMode)
 	}
@@ -92,7 +102,7 @@ func run() error {
 			return err
 		}
 	}
-	return dashboard(ctx, input, meta, config)
+	return dashboard(ctx, input, meta, config, *speed)
 }
 
 func main() {

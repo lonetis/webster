@@ -162,7 +162,7 @@ func (a *app) draw(screen tcell.Screen) {
 func (a *app) drawSpeed(v canvas) {
 	s := a.speed
 	v.rule(1)
-	v.text(2, 3, strong, "Cloudflare · speed.cloudflare.com")
+	v.text(2, 3, strong, fmt.Sprintf("Apple · %d connections · %s per direction", a.speedOptions.streams, a.speedOptions.duration))
 	for i, row := range s.rows() {
 		v.text(2, 5+i, plain, row[0])
 		v.text(17, 5+i, accent, row[1])
@@ -170,8 +170,17 @@ func (a *app) drawSpeed(v canvas) {
 	keys := "s run again   Esc back   q quit"
 	if s.phase != "" {
 		status := "Measuring " + strings.ToLower(s.phase)
-		if s.sampleBytes > 0 {
-			status += fmt.Sprintf(" · %.1f MB", float64(s.sampleBytes)/1e6)
+		if s.phase == "endpoint discovery" {
+			status = "Connecting to Apple"
+		}
+		if s.warmup {
+			status = "Warming up " + strings.ToLower(s.phase)
+		}
+		if s.window > 0 {
+			status += fmt.Sprintf(" · %.0fs / %s", s.current.elapsed.Seconds(), s.window)
+			if s.current.bytes > 0 && !s.warmup {
+				v.text(2, 10, plain, s.current.String())
+			}
 		}
 		v.text(2, 9, quiet, status)
 		keys = "Esc cancel and return   q quit"
