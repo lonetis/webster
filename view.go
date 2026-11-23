@@ -70,8 +70,21 @@ func (a *app) draw(screen tcell.Screen) {
 	if a.dnsOnly {
 		title = "DNS-only check (A)"
 	}
+	if a.speed != nil {
+		title, state = "Internet speed test", "RUNNING"
+		if a.speed.phase == "" {
+			state = "COMPLETE"
+		}
+		if a.speed.err != nil {
+			state = "FAILED"
+		}
+	}
 	v.text(12, 0, quiet, title)
 	v.text(max(2, w-2-len(state)), 0, strong, state)
+	if a.speed != nil {
+		a.drawSpeed(v)
+		return
+	}
 	if w < 52 || h < 19 {
 		v.text(1, 3, plain, "Resize to 52 × 19 for the dashboard")
 		if s := a.scan; s != nil {
@@ -117,18 +130,18 @@ func (a *app) draw(screen tcell.Screen) {
 		if a.mode == "recursive" {
 			v.text(2, 15, plain, "v Providers  "+a.pool.label())
 		}
-		keys = "Enter start run    q quit"
+		keys = "Enter start run    s speed test    q quit"
 	} else if a.showResolvers {
 		a.drawResolvers(v)
-		keys = "↑/↓ endpoint   r overview   q quit"
+		keys = "↑/↓ endpoint   r overview   s speed test   q quit"
 		if a.running() {
-			keys = "↑/↓ row   d mode   v provider   r overview   q quit"
+			keys = "↑/↓ row  d/v DNS  r overview  s speed test  q quit"
 		}
 	} else {
 		a.drawScan(v)
-		keys = "+/- processes  [ ] timeout  d DNS  v provider  q quit"
+		keys = "+/- procs  [ ] time  d/v DNS  s speed test  q quit"
 		if !a.running() {
-			keys = "r resolvers  q quit"
+			keys = "r resolvers  s speed test  q quit"
 		}
 	}
 	message := a.message
@@ -144,6 +157,31 @@ func (a *app) draw(screen tcell.Screen) {
 		keys = a.edit + " › " + a.entry + "▏   Enter apply   Esc cancel   q quit"
 	}
 	v.text(2, h-1, accent, keys)
+}
+
+func (a *app) drawSpeed(v canvas) {
+	s := a.speed
+	v.rule(1)
+	v.text(2, 3, strong, "Cloudflare · speed.cloudflare.com")
+	for i, row := range s.rows() {
+		v.text(2, 5+i, plain, row[0])
+		v.text(17, 5+i, accent, row[1])
+	}
+	keys := "s run again   Esc back   q quit"
+	if s.phase != "" {
+		status := "Measuring " + strings.ToLower(s.phase)
+		if s.sampleBytes > 0 {
+			status += fmt.Sprintf(" · %.1f MB", float64(s.sampleBytes)/1e6)
+		}
+		v.text(2, 9, quiet, status)
+		keys = "Esc cancel and return   q quit"
+	} else if s.err != nil {
+		v.text(2, 9, bad, s.err.Error())
+	}
+	if a.running() {
+		v.text(2, 11, quiet, "Origin scan running in the background")
+	}
+	v.text(2, v.h-1, accent, keys)
 }
 
 func (a *app) drawScan(v canvas) {

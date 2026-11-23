@@ -21,6 +21,9 @@ type app struct {
 	showResolvers        bool
 	resolverRow          int
 	customPool           providerPool
+	speed                *speedProgress
+	speedEvents          <-chan speedProgress
+	cancelSpeed          context.CancelFunc
 }
 
 func dashboard(ctx context.Context, input string, meta snapshot, config settings) error {
@@ -50,6 +53,7 @@ func (a *app) loop(ctx context.Context, screen tcell.Screen) {
 	go screen.ChannelEvents(events, quit)
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
+	defer a.closeSpeed()
 	defer func() {
 		if a.scan != nil {
 			a.scan.finish()
@@ -80,6 +84,13 @@ func (a *app) loop(ctx context.Context, screen tcell.Screen) {
 		case report := <-reports:
 			a.scan.accept(report)
 			redraw = false
+		case update := <-a.speedEvents:
+			a.speed = &update
+			if update.phase == "" {
+				a.speedEvents = nil
+				a.cancelSpeed()
+				a.cancelSpeed = nil
+			}
 		case <-ticker.C:
 			if a.running() {
 				a.scan.fill()
@@ -100,10 +111,40 @@ func (a *app) loop(ctx context.Context, screen tcell.Screen) {
 
 func (a *app) running() bool { return a.scan != nil && a.scan.ended.IsZero() }
 
+func (a *app) startSpeed(ctx context.Context) {
+	runCtx, cancel := context.WithCancel(ctx)
+	events := make(chan speedProgress, 1)
+	a.speed = &speedProgress{phase: "HTTPS latency"}
+	a.speedEvents, a.cancelSpeed = events, cancel
+	go func() {
+		measureSpeed(runCtx, speedTestURL, func(s speedProgress) {
+			select {
+			case events <- s:
+			case <-runCtx.Done():
+			}
+		})
+	}()
+}
+
+func (a *app) closeSpeed() {
+	if a.cancelSpeed != nil {
+		a.cancelSpeed()
+	}
+	a.speed, a.speedEvents, a.cancelSpeed = nil, nil, nil
+}
+
 func (a *app) key(ctx context.Context, e *tcell.EventKey) bool {
 	ch := e.Rune()
 	if e.Key() == tcell.KeyCtrlC || ch == 'q' || ch == 'Q' {
 		return true
+	}
+	if a.speed != nil {
+		if e.Key() == tcell.KeyEscape {
+			a.closeSpeed()
+		} else if ch == 's' && a.speedEvents == nil {
+			a.startSpeed(ctx)
+		}
+		return false
 	}
 	if a.edit != "" {
 		switch e.Key() {
@@ -139,6 +180,10 @@ func (a *app) key(ctx context.Context, e *tcell.EventKey) bool {
 	}
 	if e.Key() == tcell.KeyEscape {
 		return true
+	}
+	if ch == 's' {
+		a.startSpeed(ctx)
+		return false
 	}
 	if a.scan != nil {
 		switch {

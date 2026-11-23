@@ -21,6 +21,22 @@ func run() error {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	if len(args) > 0 && args[0] == "speedtest" {
+		flags := flag.NewFlagSet("webster speedtest", flag.ContinueOnError)
+		flags.Usage = func() {
+			fmt.Fprintln(flags.Output(), "Usage: webster speedtest\nMeasure HTTPS latency, download and upload speed to Cloudflare.")
+		}
+		if err := flags.Parse(args[1:]); err != nil {
+			if err == flag.ErrHelp {
+				return nil
+			}
+			return err
+		}
+		if flags.NArg() != 0 {
+			return fmt.Errorf("unexpected speedtest argument %q", flags.Arg(0))
+		}
+		return printSpeedTest(ctx, os.Stdout)
+	}
 	fetch := len(args) > 0 && args[0] == "fetch"
 	if fetch {
 		args = args[1:]
@@ -45,7 +61,7 @@ func run() error {
 		flags.StringVar(&provider, "provider", "cloudflare", "recursive DNS endpoints: all, or a comma-separated list of cloudflare, google, cloudflare-alt and google-alt")
 	}
 	flags.Usage = func() {
-		fmt.Fprintln(flags.Output(), "Usage: webster [options]  |  webster fetch [-data directory]")
+		fmt.Fprintln(flags.Output(), "Usage: webster [options]  |  webster fetch [-data directory]  |  webster speedtest")
 		flags.PrintDefaults()
 	}
 	if err := flags.Parse(args); err != nil {
