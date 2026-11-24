@@ -63,9 +63,10 @@ type dnsEvent struct {
 	RTT    time.Duration `json:",omitempty"`
 }
 
-// Each worker performs lookups serially. ZDNS keys recursive cache entries by
+// Each probe goroutine performs lookups serially. ZDNS keys recursive cache entries by
 // nameserver and keeps the iterative delegation cache in a separate namespace.
 type workerDNS struct {
+	sharedConfig  func() *zdns.ResolverConfig
 	config        *zdns.ResolverConfig
 	resolver      *zdns.Resolver
 	iterative     bool
@@ -86,7 +87,11 @@ func (w *workerDNS) prepare(iterative, singleAttempt bool, timeout time.Duration
 	}
 	w.close()
 	if w.config == nil {
-		w.config = zdns.NewResolverConfig()
+		if w.sharedConfig != nil {
+			w.config = w.sharedConfig()
+		} else {
+			w.config = zdns.NewResolverConfig()
+		}
 	}
 	config := *w.config
 	config.ShouldRecycleSockets = false

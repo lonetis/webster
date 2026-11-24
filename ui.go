@@ -18,6 +18,7 @@ var presets = []int{1000, 10000, 100000, 1000000, 0}
 type app struct {
 	settings
 	input                       string
+	origins                     []string
 	meta                        snapshot
 	scan, lastScan              *scan
 	edit, entry, message        string
@@ -32,7 +33,7 @@ type app struct {
 	cancelSpeed                 context.CancelFunc
 }
 
-func dashboard(ctx context.Context, out io.Writer, input string, meta snapshot, config settings, speed speedOptions) error {
+func dashboard(ctx context.Context, out io.Writer, input string, origins []string, meta snapshot, config settings, speed speedOptions) error {
 	screen, err := tcell.NewScreen()
 	if err != nil {
 		return err
@@ -40,7 +41,7 @@ func dashboard(ctx context.Context, out io.Writer, input string, meta snapshot, 
 	if err := screen.Init(); err != nil {
 		return err
 	}
-	a := &app{settings: config, input: input, meta: meta, speedOptions: speed}
+	a := &app{settings: config, input: input, origins: origins, meta: meta, speedOptions: speed}
 	if len(config.pool) > 1 && !slices.Equal(config.pool, providerNames) {
 		a.customPool = config.pool
 	}
@@ -166,6 +167,8 @@ func (a *app) key(ctx context.Context, e *tcell.EventKey) bool {
 					a.targets = n
 				case "Processes":
 					a.processes = n
+				case "Concurrency":
+					a.parallel = n
 				case "Timeout (s)":
 					a.timeout = n
 				}
@@ -246,6 +249,13 @@ func (a *app) key(ctx context.Context, e *tcell.EventKey) bool {
 		a.adjust(fieldDNS, 1)
 	case ch == 'v' && a.mode == "recursive":
 		a.adjust(fieldProvider, 1)
+	case a.scan == nil && ch == 'c':
+		a.edit, a.entry = "Concurrency", ""
+	case a.scan == nil && ch == 'f':
+		a.adjust(fieldSchedule, 1)
+	case a.running() && a.schedule == "fixed" && (ch == 'p' || ch == '-' || ch == '+' || ch == '='):
+		a.message = "Process count is fixed for this run"
+		return false
 	case ch == 'p':
 		a.edit, a.entry = "Processes", ""
 	case ch == 't':
@@ -261,7 +271,7 @@ func (a *app) key(ctx context.Context, e *tcell.EventKey) bool {
 	case a.scan == nil && ch == 'n':
 		a.edit, a.entry = "Targets", ""
 	case a.scan == nil && e.Key() == tcell.KeyEnter:
-		s, err := startScan(ctx, a.input, a.settings, a.meta.Origins)
+		s, err := newScan(ctx, a.origins, a.settings)
 		if err != nil {
 			a.message = err.Error()
 			return false
@@ -281,6 +291,8 @@ func (a *app) key(ctx context.Context, e *tcell.EventKey) bool {
 const (
 	fieldTargets = iota
 	fieldProcesses
+	fieldConcurrency
+	fieldSchedule
 	fieldTimeout
 	fieldCheck
 	fieldDNS
@@ -310,6 +322,16 @@ func (a *app) adjust(field, step int) {
 		if step < 0 || a.processes < math.MaxInt {
 			a.processes = max(1, a.processes+step)
 		}
+	case fieldConcurrency:
+		if step < 0 || a.parallel < math.MaxInt {
+			a.parallel = max(1, a.parallel+step)
+		}
+	case fieldSchedule:
+		if a.schedule == "fixed" {
+			a.schedule = "dynamic"
+		} else {
+			a.schedule = "fixed"
+		}
 	case fieldTimeout:
 		if step < 0 || int64(a.timeout) < maxTimeoutSeconds && a.timeout < math.MaxInt {
 			a.timeout = max(1, a.timeout+step)
@@ -336,10 +358,6 @@ func (a *app) adjust(field, step int) {
 
 func (a *app) applySettings() {
 	if a.running() {
-		if !slices.Equal(a.scan.pool, a.pool) {
-			a.scan.poolIndex = 0
-		}
-		a.scan.settings = a.settings
-		a.scan.fill()
+		a.scan.updateSettings(a.settings)
 	}
 }

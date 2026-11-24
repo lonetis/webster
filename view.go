@@ -124,6 +124,9 @@ func (a *app) draw(screen tcell.Screen) {
 	keys := []string{"Enter start", "↑↓ select", "←→ change"}
 	if a.running() {
 		keys = []string{"x stop", "+/- workers", "[/] timeout", "p/t set", "d DNS"}
+		if a.schedule == "fixed" {
+			keys = []string{"x stop", "[/] timeout", "t set", "d DNS"}
+		}
 		if a.mode == "recursive" {
 			keys = append(keys, "v provider")
 		}
@@ -199,9 +202,9 @@ func (a *app) drawBody(v canvas) (height, selected int) {
 }
 
 func (a *app) drawSetup(v canvas) (int, int) {
-	source := filepath.Base(a.input)
+	source := fmt.Sprintf("%s · %s origins in memory", filepath.Base(a.input), number(len(a.origins)))
 	if date, err := time.Parse("200601", a.meta.Month); err == nil {
-		source = fmt.Sprintf("CrUX · %s · %s origins", date.Format("January 2006"), number(a.meta.Origins))
+		source = fmt.Sprintf("CrUX · %s · %s origins in memory", date.Format("January 2006"), number(len(a.origins)))
 	}
 	v.heading(0, "INPUT")
 	v.text(0, 1, strong, source)
@@ -209,6 +212,8 @@ func (a *app) drawSetup(v canvas) (int, int) {
 	fields := [][3]string{
 		{"Targets", targetLabel(a.targets), "n exact count"},
 		{"Processes", number(a.processes), "p set   +/- adjust"},
+		{"Concurrency", number(a.parallel), "c set per process"},
+		{"Schedule", a.schedule, "f switch"},
 		{"Timeout", fmt.Sprintf("%d s", a.timeout), "t set   [/] adjust"},
 		{"Check", a.checkLabel(), "m switch"},
 		{"DNS", a.mode, "d cycle"},
@@ -228,7 +233,7 @@ func (a *app) drawSetup(v canvas) (int, int) {
 		}
 		v.text(2, y, style, row[0])
 		hints := max(24, min(v.w-15, 50))
-		v.at(13, 0, hints-14).text(0, y, accent, row[1])
+		v.at(15, 0, hints-16).text(0, y, accent, row[1])
 		v.text(hints, y, quiet, row[2])
 	}
 	return 5 + a.lastField()*spacing, selected
@@ -280,8 +285,11 @@ func (a *app) drawScan(v canvas) (int, int) {
 	filled := min(v.w, int(float64(v.w)*fraction))
 	v.text(0, 1, good, strings.Repeat("━", filled))
 	v.text(filled, 1, quiet, strings.Repeat("─", v.w-filled))
-	settings := fmt.Sprintf("Workers %d/%d   Timeout %ds", len(s.workers), s.processes, s.timeout)
-	stats := wrapItems(append([]string{settings}, s.rateLabels(elapsed)...), "   ", v.w)
+	settings := []string{
+		fmt.Sprintf("%s · Workers %d/%d", s.schedule, len(s.workers), s.processes),
+		fmt.Sprintf("%d checks/process", s.parallel), fmt.Sprintf("Timeout %ds", s.timeout),
+	}
+	stats := wrapItems(append(settings, s.rateLabels(elapsed)...), "   ", v.w)
 	for i, line := range stats {
 		v.text(0, 2+i, plain, line)
 	}

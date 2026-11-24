@@ -41,6 +41,14 @@ func TestOriginRates(t *testing.T) {
 	check(11*time.Second, 3.0/11, 0)           // idle window
 	s.recordCompletion(12 * time.Second)
 	check(12*time.Second, 4.0/12, 1.0/5)
+	for range 100 {
+		s.recordCompletion(12 * time.Second)
+	}
+	if len(s.completionTimes) != 1 {
+		t.Fatal("a report should use one rate sample regardless of batch size")
+	}
+	check(16*time.Second, 104.0/16, 101.0/5)
+	check(17*time.Second, 104.0/17, 0)
 }
 
 // Gate responses so the test can resize real worker processes while requests are in flight.

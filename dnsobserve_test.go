@@ -99,8 +99,10 @@ func TestDNSUpdatesBeforeHTTPCompletes(t *testing.T) {
 			if s.err != nil {
 				t.Fatal(s.err)
 			}
-			if c.dns != nil && c.dns.Reply && s.completed == 0 {
-				sawReply = true
+			for _, e := range c.events {
+				if e.DNS != nil && e.DNS.Reply && s.completed == 0 {
+					sawReply = true
+				}
 			}
 		case <-time.After(5 * time.Second):
 			t.Fatal("missing worker report")

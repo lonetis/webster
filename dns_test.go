@@ -156,7 +156,7 @@ func TestSwitchDNSDuringScan(t *testing.T) {
 		}
 		select {
 		case c := <-s.reports:
-			if c.err != nil || c.result.Status != 404 || c.job.Resolver != want {
+			if c.err != nil || len(c.events) != 1 || c.events[0].Result.Status != 404 || c.events[0].Resolver != want {
 				t.Fatalf("assignment %d: %+v", i, c)
 			}
 			s.accept(c)

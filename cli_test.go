@@ -60,6 +60,8 @@ func TestScanCommandErrors(t *testing.T) {
 		{[]string{"-timeout", "0"}, "invalid -timeout"},
 		{[]string{"-timeout", "0.5s"}, "invalid -timeout"},
 		{[]string{"-processes", "0"}, "-processes must be"},
+		{[]string{"-concurrency", "0"}, "-concurrency must be"},
+		{[]string{"-schedule", "other"}, "invalid -schedule"},
 		{[]string{"-targets", "-1"}, "invalid -targets"},
 		{[]string{"-dns", "other"}, "invalid DNS mode"},
 		{[]string{"-provider", "missing"}, "unknown recursive provider"},
@@ -74,8 +76,8 @@ func TestScanCommandErrors(t *testing.T) {
 	}
 	var out bytes.Buffer
 	err := command(t.Context(), []string{"scan", "-input", "bad.csv", "-dns-only", "-processes", "1"}, &out, io.Discard)
-	if err == nil || !strings.Contains(err.Error(), "read input") || !strings.Contains(out.String(), "Partial results · 1 completed") {
-		t.Fatalf("mid-scan input error: %v, stdout %s", err, &out)
+	if err == nil || !strings.Contains(err.Error(), "read input") || out.Len() != 0 {
+		t.Fatalf("preload input error: %v, stdout %s", err, &out)
 	}
 }
 

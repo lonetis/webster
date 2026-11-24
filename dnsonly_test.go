@@ -62,7 +62,11 @@ func TestDNSOnlyScan(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := settings{targets: 6, processes: 2, timeout: 2, mode: "recursive", pool: providerPool{"fixture"}}
-	a := app{settings: cfg, input: path}
+	origins, err := loadOrigins(t.Context(), path, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := app{settings: cfg, input: path, origins: origins}
 	ctx := context.Background()
 	toggle := tcell.NewEventKey(tcell.KeyRune, 'm', tcell.ModNone)
 	a.key(ctx, toggle)

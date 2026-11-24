@@ -98,7 +98,9 @@ func command(ctx context.Context, args []string, out, log io.Writer) error {
 	profile := flags.String("config", "", "read measurement defaults from a JSON file (explicit flags take precedence)")
 	input := flags.String("input", "", "use a local origin,rank CSV instead of the downloaded snapshot")
 	targets := flags.String("targets", "1000", "number of origins to check (all or 0 for the entire input)")
-	flags.IntVar(&config.processes, "processes", 8, "number of worker processes")
+	flags.IntVar(&config.processes, "processes", 8, "number of OS worker processes")
+	flags.IntVar(&config.parallel, "concurrency", 1, "maximum concurrent origin checks per process")
+	flags.StringVar(&config.schedule, "schedule", "dynamic", "origin assignment: dynamic or fixed (one partition per process)")
 	timeout := flags.String("timeout", "10s", "per-origin deadline in whole seconds, e.g. 5 or 5s")
 	flags.BoolVar(&config.dnsOnly, "dns-only", false, "only look up each origin's IPv4 address (DNS A record)")
 	flags.StringVar(&config.mode, "dns", "system", "DNS mode for origin checks: system, recursive or iterative")
@@ -119,6 +121,12 @@ func command(ctx context.Context, args []string, out, log io.Writer) error {
 		if err != nil || config.targets < 0 {
 			return fmt.Errorf("invalid -targets %q: use a positive count or all", *targets)
 		}
+	}
+	if config.schedule != "dynamic" && config.schedule != "fixed" {
+		return fmt.Errorf("invalid -schedule %q: choose dynamic or fixed", config.schedule)
+	}
+	if config.parallel < 1 {
+		return errors.New("-concurrency must be at least 1")
 	}
 	if config.processes < 1 {
 		return errors.New("-processes must be at least 1")
@@ -146,10 +154,15 @@ func command(ctx context.Context, args []string, out, log io.Writer) error {
 			return err
 		}
 	}
+	fmt.Fprintf(log, "Loading origins into memory from %s…\n", *input)
 	if name == "webster scan" {
 		return printScan(ctx, out, log, *input, meta, config)
 	}
-	return dashboard(ctx, out, *input, meta, config, *speed)
+	origins, err := loadOrigins(ctx, *input, meta.Origins)
+	if err != nil {
+		return err
+	}
+	return dashboard(ctx, out, *input, origins, meta, config, *speed)
 }
 
 // Use the same flag setters for saved values and command-line values.
@@ -169,7 +182,7 @@ func applyConfig(flags *flag.FlagSet, path string) error {
 	flags.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
 	for key, raw := range options {
 		switch key {
-		case "data", "input", "targets", "processes", "timeout", "dns", "provider", "dns-only":
+		case "data", "input", "targets", "processes", "concurrency", "schedule", "timeout", "dns", "provider", "dns-only":
 		default:
 			return fmt.Errorf("config %s: unknown measurement option %q", path, key)
 		}

@@ -16,8 +16,8 @@ func printScan(ctx context.Context, out, log io.Writer, input string, meta snaps
 		return err
 	}
 	defer s.finish()
-	fmt.Fprintf(log, "%s · Targets %s · Workers %d · Timeout %ds · DNS %s\n",
-		config.checkLabel(), targetLabel(s.goal), config.processes, config.timeout, config.dnsLabel())
+	fmt.Fprintf(log, "%s · Targets %s · Workers %d · Timeout %ds · DNS %s · %s scheduling · %d checks/process\n",
+		config.checkLabel(), targetLabel(s.goal), config.processes, config.timeout, config.dnsLabel(), config.schedule, config.parallel)
 
 	// Match the dashboard's gradual worker startup and keep reading reports between batches.
 	ticker := time.NewTicker(100 * time.Millisecond)

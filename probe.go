@@ -3,9 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"errors"
-	"io"
 	"net"
 	"net/http"
 	"net/http/httptrace"
@@ -110,34 +108,4 @@ func probe(transport *http.Transport, j job, dnsClient *workerDNS, emit func(dns
 		r.Reason = "connection"
 	}
 	return r
-}
-
-type workerMessage struct {
-	DNS    *dnsEvent `json:",omitempty"`
-	Result *result   `json:",omitempty"`
-}
-
-// Each child handles one assignment at a time.
-func serveWorker(in io.Reader, out io.Writer) error {
-	decode, encode := json.NewDecoder(in), json.NewEncoder(out)
-	transport := newProbeTransport()
-	defer transport.CloseIdleConnections()
-	var dnsClient workerDNS
-	defer dnsClient.close()
-	for {
-		var j job
-		if err := decode.Decode(&j); err != nil {
-			if err == io.EOF {
-				return nil
-			}
-			return err
-		}
-		r := probe(transport, j, &dnsClient, func(e dnsEvent) {
-			// A final Encode below also reports a broken pipe.
-			_ = encode.Encode(workerMessage{DNS: &e})
-		})
-		if err := encode.Encode(workerMessage{Result: &r}); err != nil {
-			return err
-		}
-	}
 }

@@ -86,9 +86,26 @@ webster scan -config office.json -targets 25    # override one setting
 webster -config office.json                     # review settings in the dashboard
 ```
 
-Explicit flags override the file. Both interfaces accept `targets` (a positive count, `"all"` or `0`), `processes`, `timeout` (whole seconds), `dns-only`, `dns`, `provider`, `input` and `data`. Relative paths resolve from the working directory. Run `webster scan -help` for defaults.
+Explicit flags override the file. Both interfaces accept `targets` (a positive count, `"all"` or `0`), `processes`, `concurrency`, `schedule`, `timeout` (whole seconds), `dns-only`, `dns`, `provider`, `input` and `data`. Relative paths resolve from the working directory. Run `webster scan -help` for defaults.
 
 The CLI writes settings and progress to stderr. Stdout contains the final counts, HTTP statuses, failure reasons, observed resolver counters and elapsed time. An unreachable origin is a measurement result. Input or worker errors give a nonzero exit status. **Ctrl+C** stops workers, prints partial totals and exits with a nonzero status.
+
+### Memory, processes and scheduling
+
+Webster reads the entire origin column into RAM and closes the CSV before starting measurements. The dashboard reuses that list when you start another run. `-targets` selects a prefix in file order. Scan timers start after loading. Budget RAM for the whole source even when selecting a small target count.
+
+`-processes` sets the number of OS worker processes. `-concurrency` sets the maximum simultaneous origin checks **per process**. For example, this runs up to 16,000 checks across eight processes:
+
+```sh
+webster scan -input origins.csv -targets all -processes 8 -concurrency 2000 -schedule fixed
+```
+
+| Schedule | How work is assigned | During the run |
+| --- | --- | --- |
+| `dynamic` (default) | The parent hands out rows from RAM as workers free up slots. Faster processes can take more rows. | The dashboard can increase or decrease the process count. Retiring workers finish their assigned checks. |
+| `fixed` | The parent divides the selected rows into contiguous partitions differing by at most one row and sends one to each process. Each process advances through its own partition independently. | The process count is locked. A process exits after finishing its partition, so the slowest partition determines when the run ends. |
+
+Fixed workers hold their own partition in RAM in addition to the parent's list. Webster starts only workers with assigned origins. Both modes stream results and DNS observations back to the dashboard, and support stopping early. Concurrency per process is selected at setup. A high concurrency setting also requires enough file descriptors and memory for the active sockets.
 
 ### Internet speed test
 
@@ -152,8 +169,10 @@ To reclaim the downloaded snapshot space, delete `~/.local/share/webster/data/`.
 | ← / → | Change the selected setup field. Target presets are 1k, 10k, 100k, 1m, and all |
 | n | Enter an exact target count before starting |
 | m | Switch between HTTP HEAD and DNS-only (A) checks before starting |
-| + / - | Increase or decrease the process count |
-| p | Enter an exact process count |
+| + / - | Increase or decrease the process count during setup or a dynamic run |
+| p | Enter an exact process count during setup or a dynamic run |
+| c | Set the maximum concurrent checks per process during setup |
+| f | Switch between dynamic and fixed scheduling during setup |
 | [ / ] | Decrease or increase the timeout by one second |
 | t | Enter a timeout in whole seconds |
 | d | Cycle through system, recursive, and iterative DNS before or during a run |
@@ -165,11 +184,11 @@ To reclaim the downloaded snapshot space, delete `~/.local/share/webster/data/`.
 | Esc | Cancel an edit, close the inline speed test, or quit from the dashboard |
 | q / Ctrl+C | Cancel pending checks, print the totals, and quit |
 
-The defaults are 1,000 targets, eight OS worker processes, and a 10-second deadline per request. Each worker handles one origin at a time. Increasing the pool starts more workers. Decreasing it lets excess workers finish their current requests and retire. Timeout changes apply to the next assignment and cover DNS, connection, TLS, and response headers.
+The defaults are 1,000 targets, eight OS processes, one concurrent check per process, dynamic scheduling and a 10-second deadline per request. Timeout changes apply to newly assigned checks in dynamic mode and to new checks after a fixed worker receives the update. The deadline covers DNS, connection, TLS and response headers.
 
 ## DNS resolution
 
-System DNS is the default. The packaged binary includes ZDNS for recursive and iterative lookups. Press **d** to change modes during setup or a scan. New assignments pick up the change immediately. In-flight checks finish with their original settings. [ZDNS](https://github.com/zmap/zdns)
+System DNS is the default. The packaged binary includes ZDNS for recursive and iterative lookups. Press **d** to change modes during setup or a scan. Dynamic workers receive the new settings with new assignments. Fixed workers use the update as they start further checks in their partition. In-flight checks finish with their original settings. [ZDNS](https://github.com/zmap/zdns)
 
 | Start Webster with | How it resolves origins |
 | --- | --- |
