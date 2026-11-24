@@ -30,8 +30,9 @@ func TestScanCommandFromConfig(t *testing.T) {
 		flags []string
 		want  []string
 	}{
-		{nil, []string{"3 completed · 1 resolved · 1 failed · 1 skipped", "input=1"}},
-		{[]string{"-dns-only=false", "-targets", "2"}, []string{"2 completed · 1 reachable · 1 failed", "404=1", "input=1"}},
+		{nil, []string{"3 completed · 1 resolved (50.0%) · 1 failed (50.0%) · 1 skipped", "input=1", "origins/s (last 5s)"}},
+		{[]string{"-dns-only=false", "-targets", "2"}, []string{"2 completed · 1 reachable (50.0%) · 1 failed (50.0%)", "404=1", "input=1"}},
+		{[]string{"-targets", "1"}, []string{"1 completed · 0 resolved (—) · 0 failed (—) · 1 skipped"}},
 	} {
 		var out, log bytes.Buffer
 		err := command(t.Context(), append([]string{"scan", "-config", "quick.json"}, tc.flags...), &out, &log)

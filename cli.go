@@ -32,7 +32,7 @@ func printScan(ctx context.Context, out, log io.Writer, input string, meta snaps
 		case now := <-ticker.C:
 			s.fill()
 			if !now.Before(nextProgress) {
-				fmt.Fprintf(log, "%d completed · %s\n", s.completed, s.outcomeTotals())
+				fmt.Fprintf(log, "%d completed · %s · %s\n", s.completed, s.outcomeTotals(), strings.Join(s.rateLabels(s.elapsed()), " · "))
 				nextProgress = now.Add(5 * time.Second)
 			}
 		}
@@ -60,7 +60,8 @@ func printScan(ctx context.Context, out, log io.Writer, input string, meta snaps
 	for _, endpoint := range slices.Sorted(maps.Keys(s.resolverStats)) {
 		fmt.Fprintf(&summary, "DNS %s  %s\n", endpointLabel(endpoint), strings.Join(s.resolverStats[endpoint].counters(), "  "))
 	}
-	fmt.Fprintf(&summary, "Elapsed %s · %.1f origins/s\n", s.elapsed().Round(time.Millisecond), float64(s.completed)/max(.001, s.elapsed().Seconds()))
+	elapsed := s.elapsed()
+	fmt.Fprintf(&summary, "Elapsed %s · %s\n", elapsed.Round(time.Millisecond), strings.Join(s.rateLabels(elapsed), " · "))
 	if _, err := io.WriteString(out, summary.String()); err != nil {
 		return err
 	}

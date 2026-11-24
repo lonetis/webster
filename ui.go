@@ -7,6 +7,7 @@ import (
 	"math"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
@@ -49,7 +50,7 @@ func dashboard(ctx context.Context, out io.Writer, input string, meta snapshot, 
 		s = a.lastScan
 	}
 	if s != nil {
-		fmt.Fprintf(out, "%d completed · %s\n", s.completed, s.outcomeTotals())
+		fmt.Fprintf(out, "%d completed · %s · %s\n", s.completed, s.outcomeTotals(), strings.Join(s.rateLabels(s.elapsed()), " · "))
 		return s.err
 	}
 	return nil

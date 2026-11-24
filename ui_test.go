@@ -27,17 +27,21 @@ func TestUnifiedDashboard(t *testing.T) {
 	}
 	press := func(a *app, key tcell.Key, ch rune) { a.key(t.Context(), tcell.NewEventKey(key, ch, tcell.ModNone)) }
 	cfg := settings{targets: 3, processes: 2, timeout: 5, mode: "recursive", pool: providerPool{"cloudflare"}}
-	s := &scan{settings: cfg, started: time.Now().Add(-time.Second), ended: time.Now(), goal: 3,
-		completed: 3, succeeded: 2, statuses: map[int]int{200: 2}, reasons: map[string]int{"dns": 1},
+	start := time.Now().Add(-time.Minute)
+	s := &scan{settings: cfg, started: start, ended: start.Add(8 * time.Second), goal: 3,
+		succeeded: 2, statuses: map[int]int{200: 2}, reasons: map[string]int{"dns": 1},
 		recent:        []observation{{"https://origin.example", result{Status: 200}}},
 		resolverStats: map[string]*resolverStats{providers["google"]: {attempts: 7, replies: 3, finished: 7}}}
+	s.recordCompletion(time.Second).reached++
+	s.recordCompletion(2*time.Second).failed++
+	s.recordCompletion(7*time.Second).reached++
 	a := &app{scan: s, settings: cfg}
 	press(a, tcell.KeyDown, 0)
 	for _, width := range []int{140, 80} {
 		screen.SetSize(width, 28)
 		a.draw(screen)
 		got := content()
-		for _, want := range []string{"HTTP STATUS", "DNS RESOLVERS", "google · 8.8.8.8:53", "Lookups 7", "RECENT ORIGINS", "https://origin.example", "Enter new run"} {
+		for _, want := range []string{"0.4 origins/s avg", "0.2 origins/s (last 5s)", "2 (66.7%)", "1 (33.3%)", "HTTP STATUS", "DNS RESOLVERS", "google · 8.8.8.8:53", "Lookups 7", "RECENT ORIGINS", "https://origin.example", "Enter new run"} {
 			if !strings.Contains(got, want) {
 				t.Fatalf("%d cols: missing %q\n%s", width, want, got)
 			}
@@ -45,6 +49,9 @@ func TestUnifiedDashboard(t *testing.T) {
 	}
 	screen.SetSize(52, 19)
 	a.draw(screen)
+	if !strings.Contains(content(), "0.2 origins/s (last 5s)") || !strings.Contains(content(), "1 (33.3%)") {
+		t.Fatalf("clipped scan metrics on narrow terminal\n%s", content())
+	}
 	if !strings.Contains(content(), "PgUp/PgDn") || !strings.Contains(content(), "DNS RESOLVERS") {
 		t.Fatalf("missing small-terminal navigation\n%s", content())
 	}

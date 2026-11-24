@@ -280,8 +280,12 @@ func (a *app) drawScan(v canvas) (int, int) {
 	filled := min(v.w, int(float64(v.w)*fraction))
 	v.text(0, 1, good, strings.Repeat("━", filled))
 	v.text(filled, 1, quiet, strings.Repeat("─", v.w-filled))
-	v.text(0, 2, plain, fmt.Sprintf("Workers %d/%d   Timeout %ds   %.1f/s avg", len(s.workers), s.processes, s.timeout, float64(s.completed)/max(.001, elapsed.Seconds())))
-	const start = 3
+	settings := fmt.Sprintf("Workers %d/%d   Timeout %ds", len(s.workers), s.processes, s.timeout)
+	stats := wrapItems(append([]string{settings}, s.rateLabels(elapsed)...), "   ", v.w)
+	for i, line := range stats {
+		v.text(0, 2+i, plain, line)
+	}
+	start := 2 + len(stats)
 	if v.w >= 72 {
 		left := (v.w - 3) * 45 / 100
 		l := v.at(0, start, left)
@@ -296,7 +300,7 @@ func (a *app) drawScan(v canvas) (int, int) {
 		return recent + s.drawRecent(v.at(0, recent, v.w)), start + resolverFirstRow + a.resolverRow
 	}
 	s.drawActivity(v.at(0, start, v.w), elapsed)
-	const dnsStart = start + 4
+	dnsStart := start + 4
 	end := dnsStart + a.drawResolvers(v.at(0, dnsStart, v.w), elapsed)
 	end += 1 + s.drawOutcomes(v.at(0, end+1, v.w))
 	end += 1 + s.drawRecent(v.at(0, end+1, v.w))
@@ -305,7 +309,11 @@ func (a *app) drawScan(v canvas) (int, int) {
 
 func (s *scan) drawActivity(v canvas, elapsed time.Duration) {
 	sec := int(elapsed / time.Second)
-	offset := 11 + max(len(number(s.succeeded)), len(number(s.failed())))
+	value := func(count int) string {
+		return fmt.Sprintf("%s (%s)", number(count), s.outcomePercent(count))
+	}
+	reached, failed := value(s.succeeded), value(s.failed())
+	offset := 11 + max(uniseg.StringWidth(reached), uniseg.StringWidth(failed))
 	n := max(0, min(len(s.history), v.w-offset))
 	series := make([]bucket, n)
 	peak := 0
@@ -327,13 +335,13 @@ func (s *scan) drawActivity(v canvas, elapsed time.Duration) {
 	levels := []rune("·▁▂▃▄▅▆▇█")
 	for i, row := range []struct {
 		label string
-		total int
+		total string
 		style tcell.Style
 	}{
-		{s.successLabel(), s.succeeded, good}, {"Failed", s.failed(), bad},
+		{s.successLabel(), reached, good}, {"Failed", failed, bad},
 	} {
 		v.text(0, i+1, row.style, row.label)
-		v.text(10, i+1, strong, number(row.total))
+		v.text(10, i+1, strong, row.total)
 		var graph strings.Builder
 		for _, b := range series {
 			value := b.reached

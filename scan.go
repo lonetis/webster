@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 )
@@ -35,6 +36,7 @@ func targetLabel(n int) string {
 }
 
 const skippedLiteral = "IP literal"
+const originRateWindow = 5 * time.Second
 
 func (c settings) successLabel() string {
 	if c.dnsOnly {
@@ -80,6 +82,7 @@ type scan struct {
 	statuses                                    map[int]int
 	reasons                                     map[string]int
 	history                                     [60]bucket
+	completionTimes                             []time.Duration // offsets from scan start within the trailing window
 	resolverStats                               map[string]*resolverStats
 	recent                                      []observation
 
@@ -105,11 +108,22 @@ func (s *scan) elapsed() time.Duration {
 	return time.Since(s.started)
 }
 
-func (s *scan) outcomeTotals() string {
-	if s.dnsOnly {
-		return fmt.Sprintf("%d resolved · %d failed · %d skipped", s.succeeded, s.failed(), s.skipped)
+func (s *scan) outcomePercent(count int) string {
+	checked := s.completed - s.skipped
+	if checked == 0 {
+		return "—"
 	}
-	return fmt.Sprintf("%d reachable · %d failed", s.succeeded, s.failed())
+	return fmt.Sprintf("%.1f%%", 100*float64(count)/float64(checked))
+}
+
+func (s *scan) outcomeTotals() string {
+	failed := s.failed()
+	totals := fmt.Sprintf("%d %s (%s) · %d failed (%s)", s.succeeded,
+		strings.ToLower(s.successLabel()), s.outcomePercent(s.succeeded), failed, s.outcomePercent(failed))
+	if s.dnsOnly {
+		totals += fmt.Sprintf(" · %d skipped", s.skipped)
+	}
+	return totals
 }
 
 func startScan(parent context.Context, input string, config settings, knownCount int) (*scan, error) {
@@ -249,7 +263,7 @@ func (s *scan) accept(c completion) {
 		return
 	}
 	r := c.result
-	b := s.bucket(time.Now())
+	b := s.recordCompletion(time.Since(s.started))
 	switch {
 	case r.Resolved || r.Status > 0:
 		s.succeeded++
@@ -263,7 +277,6 @@ func (s *scan) accept(c completion) {
 		s.reasons[r.Reason]++
 		b.failed++
 	}
-	s.completed++
 	if len(s.recent) == 5 {
 		s.recent = s.recent[:4]
 	}
@@ -280,13 +293,37 @@ func (s *scan) accept(c completion) {
 	delete(s.workers, c.worker)
 }
 
-func (s *scan) bucket(t time.Time) *bucket {
-	sec := int(t.Sub(s.started) / time.Second)
+func (s *scan) trimRateWindow(elapsed time.Duration) {
+	cutoff := elapsed - originRateWindow
+	for len(s.completionTimes) > 0 && s.completionTimes[0] <= cutoff {
+		s.completionTimes = s.completionTimes[1:]
+	}
+}
+
+func (s *scan) recordCompletion(elapsed time.Duration) *bucket {
+	s.trimRateWindow(elapsed)
+	s.completionTimes = append(s.completionTimes, elapsed)
+	s.completed++
+	sec := int(elapsed / time.Second)
 	b := &s.history[sec%len(s.history)]
 	if b.second != sec {
 		*b = bucket{second: sec}
 	}
 	return b
+}
+
+func (s *scan) originRates(elapsed time.Duration) (average, recent float64) {
+	if elapsed <= 0 {
+		return 0, 0
+	}
+	s.trimRateWindow(elapsed)
+	return float64(s.completed) / elapsed.Seconds(),
+		float64(len(s.completionTimes)) / min(elapsed, originRateWindow).Seconds()
+}
+
+func (s *scan) rateLabels(elapsed time.Duration) []string {
+	average, recent := s.originRates(elapsed)
+	return []string{fmt.Sprintf("%.1f origins/s avg", average), fmt.Sprintf("%.1f origins/s (last 5s)", recent)}
 }
 
 func (s *scan) finish() {

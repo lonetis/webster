@@ -87,7 +87,7 @@ func TestDNSOnlyScan(t *testing.T) {
 			t.Fatal("missing worker completion")
 		}
 	}
-	if s.outcomeTotals() != "1 resolved · 3 failed · 2 skipped" || len(s.statuses) != 0 ||
+	if s.outcomeTotals() != "1 resolved (25.0%) · 3 failed (75.0%) · 2 skipped" || len(s.statuses) != 0 ||
 		s.reasons["NXDOMAIN"] != 1 || s.reasons["NODATA"] != 1 || s.reasons["input"] != 1 {
 		t.Fatalf("summary %s, reasons %v, HTTP statuses %v", s.outcomeTotals(), s.reasons, s.statuses)
 	}

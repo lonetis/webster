@@ -196,6 +196,8 @@ Each HTTP check sends a single `HEAD /` with certificate validation and records 
 
 The dashboard shows successful and failed checks per second, the six most frequent HTTP status codes and failure reasons, and recent origins. The process counter shows active versus requested workers.
 
+The dashboard and CLI show average origins/s for the whole run and origins/s over the last five seconds. During the first five seconds both use the elapsed run time. Each completed origin counts once toward throughput, including skipped DNS-only IP literals. Success and failure percentages use the completed, non-skipped checks as their denominator. A dash means no such check has finished yet.
+
 Scan results stay in memory. Webster creates no result files, logs, or output directories. On quit it cancels pending checks and prints the totals for the selected check. Webster accepts and ignores the legacy `-results` flag.
 
 To scan without downloading anything, use `webster -input origins.csv` with an existing CSV whose header is `origin,rank`. The separate `webster fetch` command writes the input snapshot. Set its directory with `-data` on both commands.

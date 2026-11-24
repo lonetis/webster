@@ -22,6 +22,27 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+func TestOriginRates(t *testing.T) {
+	var s scan
+	check := func(at time.Duration, wantAvg, wantRecent float64) {
+		t.Helper()
+		avg, recent := s.originRates(at)
+		if avg != wantAvg || recent != wantRecent {
+			t.Fatalf("at %s got avg %g, last 5s %g; want %g, %g", at, avg, recent, wantAvg, wantRecent)
+		}
+	}
+	check(0, 0, 0)
+	s.recordCompletion(500 * time.Millisecond)
+	s.recordCompletion(1500 * time.Millisecond)
+	check(2*time.Second, 1, 1)
+	s.recordCompletion(5500 * time.Millisecond)
+	check(5500*time.Millisecond, 3/5.5, 2.0/5) // exactly 5s old expires
+	check(6*time.Second, 0.5, 2.0/5)           // the 1.5s completion is still in range
+	check(11*time.Second, 3.0/11, 0)           // idle window
+	s.recordCompletion(12 * time.Second)
+	check(12*time.Second, 4.0/12, 1.0/5)
+}
+
 // Gate responses so the test can resize real worker processes while requests are in flight.
 func TestResizeTimeoutAndQuit(t *testing.T) {
 	entered := make(chan struct{}, 10)
