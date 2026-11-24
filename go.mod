@@ -4,6 +4,7 @@ go 1.25.0
 
 require (
 	github.com/gdamore/tcell/v2 v2.13.10
+	github.com/rivo/uniseg v0.4.7
 	github.com/zmap/dns v1.1.70
 	github.com/zmap/zdns/v2 v2.1.1
 	golang.org/x/net v0.52.0
@@ -24,7 +25,6 @@ require (
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.67.5 // indirect
 	github.com/prometheus/procfs v0.20.1 // indirect
-	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/sirupsen/logrus v1.9.4 // indirect
 	github.com/weppos/publicsuffix-go v0.50.3 // indirect
 	github.com/zmap/go-dns-root-anchors v0.0.0-20250422052150-ed414f41f7c4 // indirect

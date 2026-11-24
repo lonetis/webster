@@ -20,6 +20,20 @@ type settings struct {
 	dnsOnly                     bool
 }
 
+func (c settings) checkLabel() string {
+	if c.dnsOnly {
+		return "DNS only (A)"
+	}
+	return "HTTP HEAD"
+}
+
+func targetLabel(n int) string {
+	if n == 0 {
+		return "all"
+	}
+	return number(n)
+}
+
 const skippedLiteral = "IP literal"
 
 func (c settings) successLabel() string {
@@ -61,7 +75,7 @@ type scan struct {
 	settings
 	goal, issued, completed, succeeded, skipped int
 	poolIndex                                   int
-	eof                                         bool
+	eof, stopped                                bool
 	started, ended                              time.Time
 	statuses                                    map[int]int
 	reasons                                     map[string]int
@@ -81,6 +95,15 @@ type scan struct {
 }
 
 func (s *scan) failed() int { return s.completed - s.succeeded - s.skipped }
+
+func (s *scan) done() bool { return s.err != nil || (s.eof && len(s.workers) == 0) }
+
+func (s *scan) elapsed() time.Duration {
+	if !s.ended.IsZero() {
+		return s.ended.Sub(s.started)
+	}
+	return time.Since(s.started)
+}
 
 func (s *scan) outcomeTotals() string {
 	if s.dnsOnly {
@@ -118,7 +141,7 @@ func startScan(parent context.Context, input string, config settings, knownCount
 	}, nil
 }
 
-// The UI owns the input stream. At most one row per running process is outstanding.
+// At most one input row per running process is outstanding.
 func (s *scan) next() (job, bool) {
 	if s.eof || (s.goal > 0 && s.issued >= s.goal) {
 		s.eof = true
@@ -270,6 +293,7 @@ func (s *scan) finish() {
 	if !s.ended.IsZero() {
 		return
 	}
+	s.stopped = !s.done()
 	s.ended = time.Now()
 	s.cancel()
 	s.children.Wait()

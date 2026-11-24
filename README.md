@@ -1,6 +1,6 @@
 # Webster
 
-Webster is a terminal connection tester for Chrome User Experience Report (CrUX) origins. Choose a target count and worker count, watch HTTP responses and network failures arrive, and adjust concurrency or timeouts during a run.
+Webster is a terminal connection tester for Chrome User Experience Report (CrUX) origins. Start an HTTP or DNS measurement from the shell, or open the interactive dashboard to watch origin results and resolver statistics together.
 
 ## Install
 
@@ -58,9 +58,41 @@ The first command downloads the latest global CrUX snapshot to `~/.local/share/w
 
 Press **Enter** to check the first 1,000 origins in rank order with the default settings. To try just a handful, press **n**, enter a count, and press **Enter** to apply it before starting.
 
+### Run a measurement from the shell
+
+`webster scan` starts immediately with the same defaults as the dashboard. Supply measurement flags directly or reuse them from a JSON file.
+
+```sh
+webster scan -targets 100 -processes 4 -timeout 5s
+webster scan -input origins.csv -targets all -dns-only -dns recursive -provider all
+```
+
+To reuse settings, save a file such as `office.json` with the options you need.
+
+```json
+{
+  "targets": 1000,
+  "processes": 8,
+  "timeout": "5s",
+  "dns-only": true,
+  "dns": "recursive",
+  "provider": "cloudflare,google"
+}
+```
+
+```sh
+webster scan -config office.json                # start immediately
+webster scan -config office.json -targets 25    # override one setting
+webster -config office.json                     # review settings in the dashboard
+```
+
+Explicit flags override the file. Both interfaces accept `targets` (a positive count, `"all"` or `0`), `processes`, `timeout` (whole seconds), `dns-only`, `dns`, `provider`, `input` and `data`. Relative paths resolve from the working directory. Run `webster scan -help` for defaults.
+
+The CLI writes settings and progress to stderr. Stdout contains the final counts, HTTP statuses, failure reasons, observed resolver counters and elapsed time. An unreachable origin is a measurement result. Input or worker errors give a nonzero exit status. **Ctrl+C** stops workers, prints partial totals and exits with a nonzero status.
+
 ### Internet speed test
 
-Run `webster speedtest` from the shell, even before downloading a CrUX snapshot. In the dashboard, press **s** to run the same test. Press **Esc** to cancel or return. To measure the connection while idle, run the test before starting a scan. During a scan, both share the connection.
+Run `webster speedtest` from the shell, even before downloading a CrUX snapshot. In the dashboard, press **s** to run the same test. Results appear inline. Press **Esc** to cancel or close the speed test. To measure the connection while idle, run the test before starting a scan. During a scan, both share the connection.
 
 By default Webster uses **four parallel TCP connections for 15 seconds per direction**, with a separate warm-up before download and upload. On a symmetric 10 Gbit/s connection, the two measurement windows alone can transfer about **37.5 GB**, plus warm-up, in-flight transfers, and protocol overhead. For a longer run with eight connections, use either command below.
 
@@ -81,7 +113,7 @@ webster -dns-only -dns iterative
 
 DNS-only mode performs one logical IPv4 address (A) lookup for each origin hostname and finishes before opening a connection to the origin. Select it with `-dns-only` or press **m** on the setup screen. The dashboard counts a hostname as **resolved** when the lookup returns an IPv4 address. IPv6-only names have no A record. Origins containing an IP address are **skipped**.
 
-Recursive DNS-only checks use the first outcome from the assigned endpoint. Cached answers can avoid a wire query, and aliases, referrals, or TCP fallback can require additional DNS exchanges. System mode also honors local host records. In recursive and iterative modes, press **r** for live ZDNS statistics. The default HTTP check remains available on the setup screen.
+Recursive DNS-only checks use the first outcome from the assigned endpoint. Cached answers can avoid a wire query, and aliases, referrals, or TCP fallback can require additional DNS exchanges. System mode also honors local host records. The dashboard shows live ZDNS statistics alongside the origin results for recursive and iterative lookups.
 
 ## Uninstall
 
@@ -116,7 +148,8 @@ To reclaim the downloaded snapshot space, delete `~/.local/share/webster/data/`.
 
 | Key | Action |
 | --- | --- |
-| ← / → | Choose 1k, 10k, 100k, 1m, or all origins before starting |
+| ↑ / ↓ | Select a setup field, or inspect a resolver during and after a scan |
+| ← / → | Change the selected setup field. Target presets are 1k, 10k, 100k, 1m, and all |
 | n | Enter an exact target count before starting |
 | m | Switch between HTTP HEAD and DNS-only (A) checks before starting |
 | + / - | Increase or decrease the process count |
@@ -125,10 +158,11 @@ To reclaim the downloaded snapshot space, delete `~/.local/share/webster/data/`.
 | t | Enter a timeout in whole seconds |
 | d | Cycle through system, recursive, and iterative DNS before or during a run |
 | v | Cycle through the recursive endpoints, all four, and any subset supplied at startup |
-| r | Open live resolver statistics during a scan or after completion. Use ↑ / ↓ to inspect an endpoint |
+| x | Stop the active scan and inspect partial results |
+| PgUp / PgDn | Scroll when more measurements or settings extend beyond the screen. Home / End jumps to the top or bottom |
 | s | Run the internet speed test, or repeat a finished test |
-| Enter | Apply an edited value or start from the setup screen |
-| Esc | Leave the speed test, cancel an edit, or quit from the dashboard |
+| Enter | Apply an edited value, start from setup, or return to setup after a finished run |
+| Esc | Cancel an edit, close the inline speed test, or quit from the dashboard |
 | q / Ctrl+C | Cancel pending checks, print the totals, and quit |
 
 The defaults are 1,000 targets, eight OS worker processes, and a 10-second deadline per request. Each worker handles one origin at a time. Increasing the pool starts more workers. Decreasing it lets excess workers finish their current requests and retire. Timeout changes apply to the next assignment and cover DNS, connection, TLS, and response headers.
@@ -146,13 +180,13 @@ System DNS is the default. The packaged binary includes ZDNS for recursive and i
 | `webster -dns recursive -provider cloudflare,google` | Alternate between the two primary endpoints |
 | `webster -dns iterative` | Start with ZDNS's built-in root hints and follow referrals to authoritative servers |
 
-Recursive mode defaults to Cloudflare. With `-provider all`, Webster assigns origins to `1.1.1.1`, `8.8.8.8`, `1.0.0.1` (`cloudflare-alt`), and `8.8.4.4` (`google-alt`) in turn across the entire worker pool. A comma-separated subset uses the order you give it. Each origin sends its address lookups and any retries to its assigned endpoint. Press **v** to change the selection during a scan and **r** to see each endpoint’s replies, refusals, and timeouts. [Cloudflare addresses](https://developers.cloudflare.com/1.1.1.1/ip-addresses/) · [Google addresses](https://developers.google.com/speed/public-dns/docs/using)
+Recursive mode defaults to Cloudflare. With `-provider all`, Webster assigns origins to `1.1.1.1`, `8.8.8.8`, `1.0.0.1` (`cloudflare-alt`), and `8.8.4.4` (`google-alt`) in turn across the entire worker pool. A comma-separated subset uses the order you give it. Each origin sends its address lookups and any retries to its assigned endpoint. Press **v** to change the selection during a scan. The resolver table shows each endpoint’s replies, refusals, and timeouts. [Cloudflare addresses](https://developers.cloudflare.com/1.1.1.1/ip-addresses/) · [Google addresses](https://developers.google.com/speed/public-dns/docs/using)
 
 For HTTP checks, both ZDNS modes look up IPv4 and IPv6 addresses, follow aliases, and connect to the resulting IPs using the original HTTP hostname and TLS certificate checks. DNS traffic uses IPv4 and requires outbound DNS on port 53, including TCP for truncated UDP responses. Iterative mode needs access to root and authoritative servers. IP-literal origins skip DNS. Workers keep a bounded DNS answer cache in memory for the run.
 
 ### Live resolver status
 
-Press **r** to see the recursive endpoints and an aggregate row for iterative lookups. Each A or AAAA lookup produces one outcome, including any retries and referrals. **R/s** is lookup replies per second, **Reply%** is the fraction of completed uncached lookups that returned a DNS response code, and **Avgms** is the average elapsed time for those replies. These columns cover the last ten seconds. Fully cached lookups have their own counter. System DNS and IP literals produce no ZDNS samples.
+The dashboard shows the four recursive endpoints and an aggregate row for iterative lookups. Use **↑ / ↓** to select a row. On narrow terminals the resolver table appears below the throughput graph. Each A or AAAA lookup produces one outcome, including any retries and referrals. **R/s** is lookup replies per second, **Reply%** is the fraction of completed uncached lookups that returned a DNS response code, and **Avgms** is the average elapsed time for those replies. These columns cover the last ten seconds. Fully cached lookups have their own counter. System DNS and IP literals produce no ZDNS samples.
 
 Select a row with **↑ / ↓** to see pending lookups, refusals, policy responses, timeouts, and other errors. **Ref** counts `REFUSED` outcomes. **EDE** counts results carrying an explicit extended DNS error for blocking, censorship, filtering, or prohibition. Both can count as replies. A timeout indicates a missing response and cannot establish why it was lost. [Extended DNS Errors](https://www.rfc-editor.org/rfc/rfc8914.html)
 
@@ -160,7 +194,7 @@ Select a row with **↑ / ↓** to see pending lookups, refusals, policy respons
 
 Each HTTP check sends a single `HEAD /` with certificate validation and records the origin's own HTTP status. Redirects, 4xx, and 5xx all count as reachable. Failed checks include a reason and error detail.
 
-The dashboard shows live reachable and failed checks per second, the six most frequent HTTP status codes, counts by failure reason, and recent origins. The process counter shows active versus requested workers.
+The dashboard shows successful and failed checks per second, the six most frequent HTTP status codes and failure reasons, and recent origins. The process counter shows active versus requested workers.
 
 Scan results stay in memory. Webster creates no result files, logs, or output directories. On quit it cancels pending checks and prints the totals for the selected check. Webster accepts and ignores the legacy `-results` flag.
 

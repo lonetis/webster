@@ -83,84 +83,93 @@ func endpointLabel(endpoint string) string {
 	return endpoint
 }
 
-func (a *app) drawResolvers(v canvas) {
+const resolverFirstRow = 3
+
+func (a *app) drawResolvers(v canvas, elapsed time.Duration) int {
 	s := a.scan
-	now := time.Now()
-	if !s.ended.IsZero() {
-		now = s.ended
-	}
-	elapsed := now.Sub(s.started)
 	sec := int(elapsed / time.Second)
 	seconds := max(0.001, elapsed.Seconds()-float64(max(0, sec-dnsWindow+1)))
-	v.text(2, 2, strong, "DNS resolvers · "+s.dnsLabel()+" mode")
-	hint := "Last 10s lookup rates and duration · counts since run start"
+	v.heading(0, "DNS RESOLVERS · ↑↓ select")
+	mode := "DNS " + s.dnsLabel() + " · last 10s"
 	if s.mode == "system" && len(s.resolverStats) == 0 {
-		hint = "Choose recursive or iterative DNS for lookup metrics"
+		mode = "System DNS · no per-resolver metrics"
 	}
-	v.text(2, 3, quiet, hint)
-	wide := v.w >= 72
-	addrWidth := max(15, min(45, v.w-39))
-	headers := "   R/s  Reply%   Ref   TO  Last"
-	if wide {
-		addrWidth = min(45, v.w-52)
-		headers = "    R/s  Reply%   Avgms   Ref  EDE    TO  Last"
-	}
-	v.text(2, 5, quiet, fmt.Sprintf("%-*s%s", addrWidth, "Resolver", headers))
-	rows := v.h - 13
-	first := max(0, a.resolverRow-rows+1)
-	for i := first; i < min(len(resolverRows), first+rows); i++ {
-		endpoint := resolverRows[i]
-		r := s.resolverStats[endpoint]
-		if r == nil {
-			r = &resolverStats{}
-		}
-		b := r.window(sec)
-		pct, rtt := "—", "—"
-		if b.finished > 0 {
-			pct = fmt.Sprintf("%.0f%%", 100*float64(b.replies)/float64(b.finished))
-		}
-		if b.replies > 0 {
-			rtt = fmt.Sprintf("%.0f", float64(b.rtt)/float64(time.Millisecond)/float64(b.replies))
-		}
-		label := endpointLabel(endpoint)
-		if len(label) > addrWidth {
-			label = label[:addrWidth-1] + "…"
-		}
-		last := r.last
-		if last == "" {
-			last = "—"
-		}
-		rate := float64(b.replies) / seconds
-		line := fmt.Sprintf("%-*s %5.1f %7s %5d %4d  %s", addrWidth, label, rate, pct, r.refused, r.timeouts, last)
+	v.text(0, 1, quiet, mode)
+	wide := v.w >= 55
+	columns := func(name, rate, pct, avg, ref, policy, timeout, last string) string {
+		row := fmt.Sprintf("%-9s %5s %6s %5s", name, rate, pct, avg)
 		if wide {
-			line = fmt.Sprintf("%-*s %6.1f %7s %7s %5d %4d %5d  %s", addrWidth, label, rate, pct, rtt, r.refused, r.policy, r.timeouts, last)
+			return fmt.Sprintf("%s %4s %4s %4s  %s", row, ref, policy, timeout, last)
 		}
-		style := plain
-		if r.lastIssue != "" && sec-r.issueSecond < dnsWindow {
-			style = bad
+		return fmt.Sprintf("%s %4s", row, timeout)
+	}
+	v.text(2, 2, quiet, columns("Endpoint", "R/s", "Reply%", "Avgms", "Ref", "EDE", "TO", "Last"))
+	for i, endpoint := range resolverRows {
+		r := s.resolverStats[endpoint]
+		rate, pct, avg, ref, ede, to, last := "—", "—", "—", "—", "—", "—", "—"
+		style := quiet
+		if r != nil {
+			b := r.window(sec)
+			rate = fmt.Sprintf("%.1f", float64(b.replies)/seconds)
+			if b.finished > 0 {
+				pct = fmt.Sprintf("%.0f%%", 100*float64(b.replies)/float64(b.finished))
+			}
+			if b.replies > 0 {
+				avg = fmt.Sprintf("%.0f", float64(b.rtt)/float64(time.Millisecond)/float64(b.replies))
+			}
+			ref, ede, to = number(r.refused), number(r.policy), number(r.timeouts)
+			if r.last != "" {
+				last = r.last
+			}
+			style = plain
+			if r.lastIssue != "" && sec-r.issueSecond < dnsWindow {
+				style = bad
+			}
 		}
 		if i == a.resolverRow {
-			style = style.Reverse(true)
+			v.text(0, resolverFirstRow+i, accent, "›")
+			style = style.Bold(true).Dim(false)
 		}
-		v.text(2, 6+i-first, style, line)
+		v.text(2, resolverFirstRow+i, style, columns(endpointLabel(endpoint), rate, pct, avg, ref, ede, to, last))
 	}
+
 	endpoint := resolverRows[a.resolverRow]
-	stats := s.resolverStats[endpoint]
-	if stats == nil {
-		stats = &resolverStats{}
-	}
-	label := endpoint
+	r := s.resolverStats[endpoint]
+	y := resolverFirstRow + len(resolverRows)
+	label := "Iterative · authoritative servers"
 	for _, p := range providerNames {
 		if providers[p] == endpoint {
 			label = p + " · " + endpoint
 			break
 		}
 	}
-	v.text(2, v.h-7, strong, fmt.Sprintf("%d/%d  %s", a.resolverRow+1, len(resolverRows), label))
-	v.text(2, v.h-6, plain, fmt.Sprintf("Lookups %d   Pending %d   Replies %d   Cached %d", stats.attempts, stats.attempts-stats.finished, stats.replies, stats.cached))
-	v.text(2, v.h-5, plain, fmt.Sprintf("REFUSED %d   Policy EDE %d   Timeouts %d", stats.refused, stats.policy, stats.timeouts))
-	v.text(2, v.h-4, plain, fmt.Sprintf("SERVFAIL %d   NXDOMAIN %d   Net errors %d", stats.servfail, stats.nxdomain, stats.networkErrors))
-	if stats.lastIssue != "" {
-		v.text(2, v.h-3, bad, fmt.Sprintf("Last issue  %s · %ds ago", stats.lastIssue, sec-stats.issueSecond))
+	v.text(0, y, strong, label)
+	if r == nil {
+		v.text(0, y+1, quiet, "No lookups recorded")
+		return y + 2
 	}
+	// Keep all lifetime counters readable even in the narrow side-by-side layout.
+	for _, line := range wrapItems(r.counters(), "  ", v.w) {
+		y++
+		v.text(0, y, plain, line)
+	}
+	if r.lastIssue != "" {
+		y++
+		v.text(0, y, bad, fmt.Sprintf("Last issue %s · %ds ago", r.lastIssue, sec-r.issueSecond))
+	}
+	return y + 1
+}
+
+func (r *resolverStats) counters() []string {
+	items := []string{
+		fmt.Sprintf("Lookups %d", r.attempts), fmt.Sprintf("Pending %d", r.attempts-r.finished),
+		fmt.Sprintf("Replies %d", r.replies), fmt.Sprintf("Cached %d", r.cached),
+		fmt.Sprintf("Refused %d", r.refused), fmt.Sprintf("Policy EDE %d", r.policy),
+		fmt.Sprintf("Timeouts %d", r.timeouts), fmt.Sprintf("SERVFAIL %d", r.servfail),
+		fmt.Sprintf("NXDOMAIN %d", r.nxdomain), fmt.Sprintf("Net errors %d", r.networkErrors),
+	}
+	if r.last != "" {
+		items = append(items, "Last "+r.last)
+	}
+	return items
 }

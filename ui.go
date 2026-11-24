@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
+	"math"
 	"slices"
 	"strconv"
 	"time"
@@ -14,20 +16,22 @@ var presets = []int{1000, 10000, 100000, 1000000, 0}
 
 type app struct {
 	settings
-	input                string
-	meta                 snapshot
-	scan                 *scan
-	edit, entry, message string
-	showResolvers        bool
-	resolverRow          int
-	customPool           providerPool
-	speedOptions         speedOptions
-	speed                *speedProgress
-	speedEvents          <-chan speedProgress
-	cancelSpeed          context.CancelFunc
+	input                       string
+	meta                        snapshot
+	scan, lastScan              *scan
+	edit, entry, message        string
+	field                       int
+	scroll, maxScroll, pageRows int
+	followSelection             bool
+	resolverRow                 int
+	customPool                  providerPool
+	speedOptions                speedOptions
+	speed                       *speedProgress
+	speedEvents                 <-chan speedProgress
+	cancelSpeed                 context.CancelFunc
 }
 
-func dashboard(ctx context.Context, input string, meta snapshot, config settings, speed speedOptions) error {
+func dashboard(ctx context.Context, out io.Writer, input string, meta snapshot, config settings, speed speedOptions) error {
 	screen, err := tcell.NewScreen()
 	if err != nil {
 		return err
@@ -36,12 +40,16 @@ func dashboard(ctx context.Context, input string, meta snapshot, config settings
 		return err
 	}
 	a := &app{settings: config, input: input, meta: meta, speedOptions: speed}
-	if len(config.pool) > 1 && len(config.pool) < len(providerNames) {
+	if len(config.pool) > 1 && !slices.Equal(config.pool, providerNames) {
 		a.customPool = config.pool
 	}
 	func() { defer screen.Fini(); a.loop(ctx, screen) }()
-	if s := a.scan; s != nil {
-		fmt.Printf("%d completed · %s\n", s.completed, s.outcomeTotals())
+	s := a.scan
+	if s == nil {
+		s = a.lastScan
+	}
+	if s != nil {
+		fmt.Fprintf(out, "%d completed · %s\n", s.completed, s.outcomeTotals())
 		return s.err
 	}
 	return nil
@@ -99,7 +107,7 @@ func (a *app) loop(ctx context.Context, screen tcell.Screen) {
 				redraw = false
 			}
 		}
-		if a.running() && (a.scan.err != nil || (a.scan.eof && len(a.scan.workers) == 0)) {
+		if a.running() && a.scan.done() {
 			a.scan.finish()
 			a.edit = ""
 			redraw = true
@@ -139,14 +147,6 @@ func (a *app) key(ctx context.Context, e *tcell.EventKey) bool {
 	if e.Key() == tcell.KeyCtrlC || ch == 'q' || ch == 'Q' {
 		return true
 	}
-	if a.speed != nil {
-		if e.Key() == tcell.KeyEscape {
-			a.closeSpeed()
-		} else if ch == 's' && a.speedEvents == nil {
-			a.startSpeed(ctx)
-		}
-		return false
-	}
 	if a.edit != "" {
 		switch e.Key() {
 		case tcell.KeyEscape:
@@ -179,82 +179,158 @@ func (a *app) key(ctx context.Context, e *tcell.EventKey) bool {
 		}
 		return false
 	}
-	if e.Key() == tcell.KeyEscape {
-		return true
-	}
-	if ch == 's' {
-		a.startSpeed(ctx)
-		return false
-	}
-	if a.scan != nil {
-		switch {
-		case ch == 'r':
-			a.showResolvers = !a.showResolvers
-			return false
-		case a.showResolvers && e.Key() == tcell.KeyDown:
-			a.resolverRow = min(a.resolverRow+1, len(resolverRows)-1)
-			return false
-		case a.showResolvers && e.Key() == tcell.KeyUp:
-			a.resolverRow = max(0, a.resolverRow-1)
+	switch e.Key() {
+	case tcell.KeyEscape:
+		if a.speed != nil {
+			a.closeSpeed()
+			a.scroll = 0
 			return false
 		}
+		return true
+	case tcell.KeyPgDn:
+		a.scroll = min(a.maxScroll, a.scroll+max(1, a.pageRows-1))
+		return false
+	case tcell.KeyPgUp:
+		a.scroll = max(0, a.scroll-max(1, a.pageRows-1))
+		return false
+	case tcell.KeyHome:
+		a.scroll = 0
+		return false
+	case tcell.KeyEnd:
+		a.scroll = a.maxScroll
+		return false
+	}
+	if ch == 's' {
+		if a.speedEvents == nil {
+			a.startSpeed(ctx)
+			a.scroll = 0
+		}
+		return false
+	}
+	if e.Key() == tcell.KeyUp || e.Key() == tcell.KeyDown {
+		step := 1
+		if e.Key() == tcell.KeyUp {
+			step = -1
+		}
+		if a.scan == nil {
+			a.field = max(0, min(a.lastField(), a.field+step))
+		} else {
+			a.resolverRow = max(0, min(len(resolverRows)-1, a.resolverRow+step))
+		}
+		a.followSelection = true
+		return false
 	}
 	if a.scan != nil && !a.running() {
+		if e.Key() == tcell.KeyEnter {
+			a.lastScan = a.scan
+			a.scan, a.message, a.scroll = nil, "", 0
+			a.field = 0
+		}
 		return false
 	}
 	a.message = ""
 	switch {
-	case a.scan == nil && ch == 'm':
-		a.dnsOnly = !a.dnsOnly
-	case ch == 'd':
-		i := slices.Index(dnsModes, a.mode)
-		a.mode = dnsModes[(i+1)%len(dnsModes)]
-	case ch == 'v' && a.mode == "recursive":
-		switch {
-		case len(a.pool) == 1:
-			i := slices.Index(providerNames, a.pool[0]) + 1
-			if i == len(providerNames) {
-				a.pool = providerNames
-			} else {
-				a.pool = providerPool{providerNames[i]}
-			}
-		case len(a.pool) == len(providerNames) && len(a.customPool) > 0:
-			a.pool = a.customPool
-		default:
-			a.pool = providerPool{providerNames[0]}
+	case a.running() && ch == 'x':
+		a.scan.finish()
+		return false
+	case a.scan == nil && (e.Key() == tcell.KeyLeft || e.Key() == tcell.KeyRight):
+		step := 1
+		if e.Key() == tcell.KeyLeft {
+			step = -1
 		}
+		a.adjust(a.field, step)
+	case a.scan == nil && ch == 'm':
+		a.adjust(fieldCheck, 1)
+	case ch == 'd':
+		a.adjust(fieldDNS, 1)
+	case ch == 'v' && a.mode == "recursive":
+		a.adjust(fieldProvider, 1)
 	case ch == 'p':
 		a.edit, a.entry = "Processes", ""
 	case ch == 't':
 		a.edit, a.entry = "Timeout (s)", ""
 	case ch == '+' || ch == '=':
-		a.processes++
+		a.adjust(fieldProcesses, 1)
 	case ch == '-':
-		a.processes = max(1, a.processes-1)
+		a.adjust(fieldProcesses, -1)
 	case ch == ']':
-		a.timeout++
+		a.adjust(fieldTimeout, 1)
 	case ch == '[':
-		a.timeout = max(1, a.timeout-1)
+		a.adjust(fieldTimeout, -1)
 	case a.scan == nil && ch == 'n':
 		a.edit, a.entry = "Targets", ""
-	case a.scan == nil && (e.Key() == tcell.KeyLeft || e.Key() == tcell.KeyRight):
-		i := slices.Index(presets, a.targets)
-		if e.Key() == tcell.KeyLeft {
-			i += len(presets) - 1
-		} else {
-			i++
-		}
-		a.targets = presets[i%len(presets)]
 	case a.scan == nil && e.Key() == tcell.KeyEnter:
 		s, err := startScan(ctx, a.input, a.settings, a.meta.Origins)
 		if err != nil {
 			a.message = err.Error()
 			return false
 		}
-		a.scan = s
+		a.scan, a.lastScan, a.scroll = s, nil, 0
+		a.resolverRow = 0
+		if a.mode == "iterative" {
+			a.resolverRow = len(resolverRows) - 1
+		} else if a.mode == "recursive" {
+			a.resolverRow = max(0, slices.Index(resolverRows, providers[a.pool[0]]))
+		}
 	}
 	a.applySettings()
 	return false
+}
+
+const (
+	fieldTargets = iota
+	fieldProcesses
+	fieldTimeout
+	fieldCheck
+	fieldDNS
+	fieldProvider
+)
+
+func (a *app) lastField() int {
+	if a.mode == "recursive" {
+		return fieldProvider
+	}
+	return fieldDNS
+}
+
+func (a *app) adjust(field, step int) {
+	switch field {
+	case fieldTargets:
+		i := slices.Index(presets, a.targets)
+		if i < 0 {
+			// A custom count falls between adjacent presets; all is last.
+			i, _ = slices.BinarySearch(presets[:len(presets)-1], a.targets)
+			if step > 0 {
+				i--
+			}
+		}
+		a.targets = presets[(i+step+len(presets))%len(presets)]
+	case fieldProcesses:
+		if step < 0 || a.processes < math.MaxInt {
+			a.processes = max(1, a.processes+step)
+		}
+	case fieldTimeout:
+		if step < 0 || int64(a.timeout) < maxTimeoutSeconds && a.timeout < math.MaxInt {
+			a.timeout = max(1, a.timeout+step)
+		}
+	case fieldCheck:
+		a.dnsOnly = !a.dnsOnly
+	case fieldDNS:
+		i := slices.Index(dnsModes, a.mode)
+		a.mode = dnsModes[(i+step+len(dnsModes))%len(dnsModes)]
+		a.field = min(a.field, a.lastField())
+	case fieldProvider:
+		var pools []providerPool
+		for _, name := range providerNames {
+			pools = append(pools, providerPool{name})
+		}
+		pools = append(pools, providerNames)
+		if len(a.customPool) > 0 {
+			pools = append(pools, a.customPool)
+		}
+		i := slices.IndexFunc(pools, func(p providerPool) bool { return slices.Equal(a.pool, p) })
+		a.pool = pools[(i+step+len(pools))%len(pools)]
+	}
 }
 
 func (a *app) applySettings() {

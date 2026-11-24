@@ -43,7 +43,7 @@ func parseProviderPool(value string) (providerPool, error) {
 }
 
 func (p providerPool) label() string {
-	if len(p) == len(providerNames) {
+	if slices.Equal(p, providerNames) {
 		return "all"
 	}
 	return strings.Join(p, ",")

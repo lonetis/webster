@@ -12,6 +12,7 @@ import (
 	"unicode"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/uniseg"
 )
 
 var (
@@ -31,296 +32,385 @@ func number(n int) string {
 	return s
 }
 
+// Each column clips its own text. Scrolling moves the content origin while
+// the header and key hints stay outside the vertical clipping bounds.
 type canvas struct {
 	tcell.Screen
-	w, h int
+	x, y, w     int
+	top, bottom int
+}
+
+func (v canvas) at(x, y, width int) canvas {
+	v.x, v.y, v.w = v.x+x, v.y+y, min(width, v.w-x)
+	return v
 }
 
 func (v canvas) text(x, y int, style tcell.Style, s string) {
-	if x >= v.w || y < 0 || y >= v.h {
+	if x < 0 || x >= v.w || v.y+y < v.top || v.y+y >= v.bottom {
 		return
 	}
+	room := v.w - x
 	s = strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) {
 			return ' '
 		}
 		return r
 	}, s)
-	v.PutStrStyled(x, y, s, style)
+	if len(s) > room && uniseg.StringWidth(s) > room {
+		g := uniseg.NewGraphemes(s)
+		var clipped strings.Builder
+		for g.Next() && room > g.Width() {
+			clipped.WriteString(g.Str())
+			room -= g.Width()
+		}
+		s = clipped.String() + "…"
+	}
+	v.PutStrStyled(v.x+x, v.y+y, s, style)
 }
-func (v canvas) rule(y int) { v.text(1, y, quiet, strings.Repeat("─", max(0, v.w-2))) }
+
+func (v canvas) heading(y int, title string) {
+	v.text(0, y, accent, title)
+	start := uniseg.StringWidth(title) + 1
+	if start < v.w {
+		v.text(start, y, quiet, strings.Repeat("─", v.w-start))
+	}
+}
+
+func wrapItems(items []string, gap string, width int) []string {
+	var lines []string
+	line := ""
+	for _, item := range items {
+		switch {
+		case line == "":
+			line = item
+		case uniseg.StringWidth(line+gap+item) <= width:
+			line += gap + item
+		default:
+			lines = append(lines, line)
+			line = item
+		}
+	}
+	if line != "" {
+		lines = append(lines, line)
+	}
+	return lines
+}
 
 func (a *app) draw(screen tcell.Screen) {
 	w, h := screen.Size()
-	v := canvas{screen, w, h}
-	v.Clear()
-	defer v.Show()
-	state := "SETUP"
-	if s := a.scan; s != nil {
-		state = "RUNNING"
-		if !s.ended.IsZero() {
-			state = "COMPLETE"
-		}
-		if s.err != nil {
-			state = "STOPPED"
-		}
-	}
-	v.text(2, 0, accent, "WEBSTER")
-	title := "Origin connection tester"
-	if a.dnsOnly {
-		title = "DNS-only check (A)"
-	}
-	if a.speed != nil {
-		title, state = "Internet speed test", "RUNNING"
-		if a.speed.phase == "" {
-			state = "COMPLETE"
-		}
-		if a.speed.err != nil {
-			state = "FAILED"
-		}
-	}
-	v.text(12, 0, quiet, title)
-	v.text(max(2, w-2-len(state)), 0, strong, state)
-	if a.speed != nil {
-		a.drawSpeed(v)
+	screen.Clear()
+	defer screen.Show()
+	v := canvas{Screen: screen, x: 2, w: w - 4, bottom: h}
+	if w < 44 || h < 12 {
+		v.text(0, 0, accent, "WEBSTER")
+		v.text(0, 2, plain, "Resize to at least 44 × 12")
+		v.text(0, h-1, quiet, "q quit")
 		return
 	}
-	if w < 52 || h < 19 {
-		v.text(1, 3, plain, "Resize to 52 × 19 for the dashboard")
-		if s := a.scan; s != nil {
-			v.text(1, 5, plain, s.outcomeTotals())
+	state, style := "SETUP", quiet
+	if a.scan != nil {
+		state, style = "RUNNING", good
+		if a.scan.err != nil || a.scan.stopped {
+			state, style = "STOPPED", bad
+		} else if !a.running() {
+			state, style = "COMPLETE", good
 		}
-		v.text(1, h-1, quiet, "q quit")
-		return
 	}
-	v.rule(1)
-	var keys string
-	if a.scan == nil {
-		source := filepath.Base(a.input)
-		if a.meta.Month != "" {
-			date, _ := time.Parse("200601", a.meta.Month)
-			source = "CrUX global · " + date.Format("January 2006")
-		}
-		v.text(2, 3, quiet, "SOURCE")
-		v.text(2, 4, strong, source)
-		if a.meta.Origins > 0 {
-			v.text(2, 5, plain, number(a.meta.Origins)+" origins in rank order")
-		}
-		v.text(2, 7, quiet, "RUN SETTINGS")
-		targets := number(a.targets)
-		if a.targets == 0 {
-			targets = "All origins"
-		}
-		check := "HTTP HEAD"
-		if a.dnsOnly {
-			check = "DNS only (A)"
-		}
-		for i, row := range [][3]string{
-			{"Targets", targets, "← → presets   n exact"},
-			{"Processes", number(a.processes), "+ / − adjust   p set"},
-			{"Timeout", fmt.Sprintf("%d s", a.timeout), "[ / ] adjust   t set"},
-			{"DNS", a.mode, "d cycle"},
-			{"Check", check, "m switch"},
-		} {
-			y := 8 + i*2
-			v.text(2, y, plain, row[0])
-			v.text(15, y, accent, row[1])
-			v.text(29, y, quiet, row[2])
-		}
+	v.text(0, 0, accent, "WEBSTER")
+	v.text(10, 0, strong, a.checkLabel())
+	v.text(v.w-len(state), 0, style, state)
+	v.text(0, 1, quiet, strings.Repeat("─", v.w))
+
+	keys := []string{"Enter start", "↑↓ select", "←→ change"}
+	if a.running() {
+		keys = []string{"x stop", "+/- workers", "[/] timeout", "p/t set", "d DNS"}
 		if a.mode == "recursive" {
-			v.text(2, 15, plain, "v Providers  "+a.pool.label())
+			keys = append(keys, "v provider")
 		}
-		keys = "Enter start run    s speed test    q quit"
-	} else if a.showResolvers {
-		a.drawResolvers(v)
-		keys = "↑/↓ endpoint   r overview   s speed test   q quit"
-		if a.running() {
-			keys = "↑/↓ row  d/v DNS  r overview  s speed test  q quit"
+	} else if a.scan != nil {
+		keys = []string{"Enter new run"}
+	}
+	if a.speed != nil {
+		keys = append(keys, "Esc close speed test")
+	}
+	if a.speedEvents == nil {
+		keys = append(keys, "s speed test")
+	}
+	keys = append(keys, "q quit")
+	if a.edit != "" {
+		keys = []string{a.edit + " › " + a.entry + "▏", "Enter apply", "Esc cancel"}
+	}
+	keyLines := wrapItems(keys, "   ", v.w)
+	footer := h - len(keyLines) - 1
+	body := viewport(v, footer, a.scroll)
+	a.pageRows = footer - 2
+	height, selected := a.drawBody(body)
+	a.maxScroll = max(0, height-a.pageRows)
+	offset := min(a.scroll, a.maxScroll)
+	if a.followSelection {
+		offset = max(0, min(offset, selected))
+		offset = max(offset, selected-a.pageRows+1)
+		a.followSelection = false
+	}
+	if offset != a.scroll {
+		a.scroll = offset
+		// The layout height and selection can change on resize or mode switch.
+		// Clear the viewport before painting it at the newly clamped offset.
+		for y := body.top; y < body.bottom; y++ {
+			v.text(0, y, plain, strings.Repeat(" ", v.w))
 		}
-	} else {
-		a.drawScan(v)
-		keys = "+/- procs  [ ] time  d/v DNS  s speed test  q quit"
-		if !a.running() {
-			keys = "r resolvers  s speed test  q quit"
-		}
+		a.drawBody(viewport(v, footer, offset))
 	}
 	message := a.message
 	if a.scan != nil && a.scan.err != nil {
 		message = a.scan.err.Error()
 	}
-	if message != "" {
-		v.text(2, h-2, bad, message)
-	} else {
-		v.rule(h - 2)
+	switch {
+	case message != "":
+		v.text(0, footer, bad, message)
+	case a.maxScroll > 0:
+		v.text(0, footer, quiet, fmt.Sprintf("PgUp/PgDn scroll  ·  lines %d–%d of %d", a.scroll+1, a.scroll+a.pageRows, height))
+	default:
+		v.text(0, footer, quiet, strings.Repeat("─", v.w))
 	}
-	if a.edit != "" {
-		keys = a.edit + " › " + a.entry + "▏   Enter apply   Esc cancel   q quit"
+	for i, row := range keyLines {
+		v.text(0, footer+1+i, strong, row)
 	}
-	v.text(2, h-1, accent, keys)
 }
 
-func (a *app) drawSpeed(v canvas) {
-	s := a.speed
-	v.rule(1)
-	v.text(2, 3, strong, fmt.Sprintf("Apple · %d connections · %s per direction", a.speedOptions.streams, a.speedOptions.duration))
-	for i, row := range s.rows() {
-		v.text(2, 5+i, plain, row[0])
-		v.text(17, 5+i, accent, row[1])
+func viewport(v canvas, footer, offset int) canvas {
+	v = v.at(0, 2-offset, v.w)
+	v.top, v.bottom = 2, footer
+	return v
+}
+
+func (a *app) drawBody(v canvas) (height, selected int) {
+	y := 0
+	if a.speed != nil {
+		y = a.drawSpeed(v) + 1
 	}
-	keys := "s run again   Esc back   q quit"
-	if s.phase != "" {
+	main := v.at(0, y, v.w)
+	if a.scan == nil {
+		height, selected = a.drawSetup(main)
+	} else {
+		height, selected = a.drawScan(main)
+	}
+	return y + height, y + selected
+}
+
+func (a *app) drawSetup(v canvas) (int, int) {
+	source := filepath.Base(a.input)
+	if date, err := time.Parse("200601", a.meta.Month); err == nil {
+		source = fmt.Sprintf("CrUX · %s · %s origins", date.Format("January 2006"), number(a.meta.Origins))
+	}
+	v.heading(0, "INPUT")
+	v.text(0, 1, strong, source)
+	v.heading(3, "MEASUREMENT SETTINGS")
+	fields := [][3]string{
+		{"Targets", targetLabel(a.targets), "n exact count"},
+		{"Processes", number(a.processes), "p set   +/- adjust"},
+		{"Timeout", fmt.Sprintf("%d s", a.timeout), "t set   [/] adjust"},
+		{"Check", a.checkLabel(), "m switch"},
+		{"DNS", a.mode, "d cycle"},
+		{"Providers", a.pool.label(), "v cycle"},
+	}
+	spacing := 1
+	if a.pageRows >= 17 {
+		spacing = 2
+	}
+	selected := 4 + a.field*spacing
+	for i, row := range fields[:a.lastField()+1] {
+		y := 4 + i*spacing
+		style := plain
+		if i == a.field {
+			style = strong
+			v.text(0, y, accent, "›")
+		}
+		v.text(2, y, style, row[0])
+		hints := max(24, min(v.w-15, 50))
+		v.at(13, 0, hints-14).text(0, y, accent, row[1])
+		v.text(hints, y, quiet, row[2])
+	}
+	return 5 + a.lastField()*spacing, selected
+}
+
+func (a *app) drawSpeed(v canvas) int {
+	s := a.speed
+	v.heading(0, "INTERNET SPEED")
+	v.text(0, 1, quiet, fmt.Sprintf("Apple · %d streams · %s per direction", a.speedOptions.streams, a.speedOptions.duration))
+	for i, row := range s.rows() {
+		v.text(0, 2+i, plain, row[0])
+		v.text(15, 2+i, strong, row[1])
+	}
+	if s.err != nil {
+		v.text(0, 5, bad, s.err.Error())
+	} else if s.phase != "" {
 		status := "Measuring " + strings.ToLower(s.phase)
 		if s.phase == "endpoint discovery" {
 			status = "Connecting to Apple"
-		}
-		if s.warmup {
+		} else if s.warmup {
 			status = "Warming up " + strings.ToLower(s.phase)
 		}
 		if s.window > 0 {
 			status += fmt.Sprintf(" · %.0fs / %s", s.current.elapsed.Seconds(), s.window)
-			if s.current.bytes > 0 && !s.warmup {
-				v.text(2, 10, plain, s.current.String())
-			}
 		}
-		v.text(2, 9, quiet, status)
-		keys = "Esc cancel and return   q quit"
-	} else if s.err != nil {
-		v.text(2, 9, bad, s.err.Error())
+		v.text(0, 5, accent, status)
+		if s.current.bytes > 0 && !s.warmup {
+			v.text(0, 6, plain, s.current.String())
+			return 7
+		}
+	} else {
+		v.text(0, 5, good, "Speed test complete")
 	}
-	if a.running() {
-		v.text(2, 11, quiet, "Origin scan running in the background")
-	}
-	v.text(2, v.h-1, accent, keys)
+	return 6
 }
 
-func (a *app) drawScan(v canvas) {
+func (a *app) drawScan(v canvas) (int, int) {
 	s := a.scan
-	now := time.Now()
-	if !s.ended.IsZero() {
-		now = s.ended
-	}
-	elapsed := now.Sub(s.started)
-	goal := "all"
+	elapsed := s.elapsed()
+	progress := number(s.completed) + " origins checked"
 	fraction := 0.0
 	if s.goal > 0 {
-		goal = number(s.goal)
 		fraction = float64(s.completed) / float64(s.goal)
+		progress = fmt.Sprintf("%s / %s origins   %.1f%%", number(s.completed), number(s.goal), 100*fraction)
 	}
-	progress := fmt.Sprintf("%s / %s", number(s.completed), goal)
-	if s.goal > 0 {
-		progress += fmt.Sprintf("   %.1f%%", 100*fraction)
-	}
-	v.text(2, 2, strong, progress)
 	clock := elapsed.Round(time.Second).String()
-	v.text(v.w-2-len(clock), 2, quiet, clock)
-	width := v.w - 4
-	filled := min(width, int(float64(width)*fraction))
-	v.text(2, 3, accent, strings.Repeat("━", filled))
-	v.text(2+filled, 3, quiet, strings.Repeat("─", width-filled))
-	rate := float64(s.completed) / max(0.001, elapsed.Seconds())
-	v.text(2, 4, plain, fmt.Sprintf("Processes %d/%d   Timeout %ds   %.1f/s avg", len(s.workers), s.processes, s.timeout, rate))
-	dnsLine := "DNS " + s.dnsLabel() + "   r resolver status"
-	if len(s.resolverStats) > 0 {
-		var refused, policy, timeouts int
-		for _, r := range s.resolverStats {
-			refused += r.refused
-			policy += r.policy
-			timeouts += r.timeouts
+	v.at(0, 0, v.w-len(clock)-2).text(0, 0, strong, progress)
+	v.text(v.w-len(clock), 0, quiet, clock)
+	filled := min(v.w, int(float64(v.w)*fraction))
+	v.text(0, 1, good, strings.Repeat("━", filled))
+	v.text(filled, 1, quiet, strings.Repeat("─", v.w-filled))
+	v.text(0, 2, plain, fmt.Sprintf("Workers %d/%d   Timeout %ds   %.1f/s avg", len(s.workers), s.processes, s.timeout, float64(s.completed)/max(.001, elapsed.Seconds())))
+	const start = 3
+	if v.w >= 72 {
+		left := (v.w - 3) * 45 / 100
+		l := v.at(0, start, left)
+		r := v.at(left+3, start, v.w-left-3)
+		s.drawActivity(l, elapsed)
+		end := 4 + s.drawOutcomes(l.at(0, 4, l.w))
+		height := max(end, a.drawResolvers(r, elapsed))
+		for y := range height {
+			v.text(left+1, start+y, quiet, "│")
 		}
-		dnsLine = fmt.Sprintf("DNS %s  Ref %d  EDE %d  TO %d  r details", s.dnsLabel(), refused, policy, timeouts)
+		recent := start + height + 1
+		return recent + s.drawRecent(v.at(0, recent, v.w)), start + resolverFirstRow + a.resolverRow
 	}
-	v.text(2, 5, plain, dnsLine)
+	s.drawActivity(v.at(0, start, v.w), elapsed)
+	const dnsStart = start + 4
+	end := dnsStart + a.drawResolvers(v.at(0, dnsStart, v.w), elapsed)
+	end += 1 + s.drawOutcomes(v.at(0, end+1, v.w))
+	end += 1 + s.drawRecent(v.at(0, end+1, v.w))
+	return end, dnsStart + resolverFirstRow + a.resolverRow
+}
 
-	n := min(len(s.history), v.w-28)
+func (s *scan) drawActivity(v canvas, elapsed time.Duration) {
 	sec := int(elapsed / time.Second)
+	offset := 11 + max(len(number(s.succeeded)), len(number(s.failed())))
+	n := max(0, min(len(s.history), v.w-offset))
 	series := make([]bucket, n)
 	peak := 0
 	for i := range series {
 		t := sec - n + 1 + i
-		if t < 0 {
-			continue
-		}
-		b := s.history[t%len(s.history)]
-		if b.second == t {
-			series[i] = b
-			peak = max(peak, b.reached, b.failed)
+		if t >= 0 {
+			b := s.history[t%len(s.history)]
+			if b.second == t {
+				series[i] = b
+				peak = max(peak, b.reached, b.failed)
+			}
 		}
 	}
-	v.text(2, 6, quiet, fmt.Sprintf("CHECKS / SECOND   %ds window · peak %d/s", n, peak))
-	v.text(2, 7, good, s.successLabel())
-	v.text(2, 8, bad, "Failed")
+	heading := fmt.Sprintf("CHECKS / SECOND · peak %d", peak)
+	if v.w >= 40 {
+		heading += fmt.Sprintf(" · %ds", n)
+	}
+	v.heading(0, heading)
 	levels := []rune("·▁▂▃▄▅▆▇█")
-	spark := func(value int) string {
-		if value == 0 {
-			return string(levels[0])
+	for i, row := range []struct {
+		label string
+		total int
+		style tcell.Style
+	}{
+		{s.successLabel(), s.succeeded, good}, {"Failed", s.failed(), bad},
+	} {
+		v.text(0, i+1, row.style, row.label)
+		v.text(10, i+1, strong, number(row.total))
+		var graph strings.Builder
+		for _, b := range series {
+			value := b.reached
+			if i == 1 {
+				value = b.failed
+			}
+			level := 0
+			if value > 0 {
+				level = 1 + 7*value/peak
+			}
+			graph.WriteRune(levels[level])
 		}
-		return string(levels[1+(value*7/max(1, peak))])
+		v.text(offset, i+1, row.style, graph.String())
 	}
-	for i, b := range series {
-		v.text(13+i, 7, good, spark(b.reached))
-		v.text(13+i, 8, bad, spark(b.failed))
-	}
-	v.text(15+n, 7, strong, number(s.succeeded))
-	v.text(15+n, 8, strong, number(s.failed()))
+}
 
-	right := v.w / 2
-	v.text(right, 10, quiet, "FAILURE REASONS")
-	bar := func(x, y, space int, label string, count, total int, style tcell.Style) {
-		num := number(count)
-		v.text(x, y, plain, label)
-		v.text(x+space-len(num), y, style, num)
-		available := space - 13 - len(num)
-		if count > 0 && available > 0 {
-			lenBar := max(1, available*count/max(total, 1))
-			v.text(x+11, y, style, strings.Repeat("▰", lenBar))
+func (s *scan) drawOutcomes(v canvas) int {
+	left := v.at(0, 0, (v.w-2)/2)
+	right := v.at(left.w+2, 0, v.w-left.w-2)
+	line := func(c canvas, y int, label string, count, total int, style tcell.Style) {
+		value := number(count)
+		c.at(0, 0, c.w-len(value)-1).text(0, y, plain, label)
+		start := max(10, len(label)+1)
+		if space := c.w - len(value) - 1 - start; space >= 4 && count > 0 {
+			c.text(start, y, style, strings.Repeat("━", max(1, space*count/max(1, total))))
+		}
+		c.text(c.w-len(value), y, style, value)
+	}
+	statuses, reasons := topCounts(s.statuses), topCounts(s.reasons)
+	rows := max(1, len(statuses), len(reasons))
+	if s.dnsOnly {
+		left.heading(0, "DNS A LOOKUPS")
+		line(left, 1, "Resolved", s.succeeded, s.completed, good)
+		line(left, 2, "Failed", s.failed(), s.completed, bad)
+		line(left, 3, "Skipped", s.skipped, s.completed, quiet)
+		rows = max(rows, 3)
+	} else {
+		left.heading(0, "HTTP STATUS")
+		if len(statuses) == 0 {
+			left.text(0, 1, quiet, "No responses")
+		}
+		for i, code := range statuses {
+			line(left, i+1, strconv.Itoa(code), s.statuses[code], s.succeeded, good)
 		}
 	}
-	reasons := []string{"dns", "connection", "tls", "timeout", "protocol", "input"}
-	if s.dnsOnly {
-		v.text(2, 10, quiet, "DNS A LOOKUPS")
-		bar(2, 11, right-5, "Resolved", s.succeeded, s.completed, good)
-		bar(2, 12, right-5, "Failed", s.failed(), s.completed, bad)
-		bar(2, 13, right-5, "Skipped", s.skipped, s.completed, quiet)
-		reasons = topCounts(s.reasons)
-	} else {
-		v.text(2, 10, quiet, "HTTP STATUS")
-		if len(s.statuses) == 0 {
-			v.text(2, 11, quiet, "Awaiting response")
-		}
-		for i, code := range topCounts(s.statuses) {
-			bar(2, 11+i, right-5, strconv.Itoa(code), s.statuses[code], s.succeeded, good)
-		}
+	right.heading(0, "FAILURE REASONS")
+	if len(reasons) == 0 {
+		right.text(0, 1, quiet, "None")
 	}
 	for i, reason := range reasons {
-		bar(right, 11+i, v.w-right-3, reason, s.reasons[reason], s.failed(), bad)
+		line(right, i+1, reason, s.reasons[reason], s.failed(), bad)
 	}
-	if v.h > 21 {
-		v.text(2, 18, quiet, "RECENT ORIGINS")
-		for i, r := range s.recent {
-			y := 19 + i
-			if y >= v.h-2 {
-				break
-			}
-			label, style := r.Reason, bad
-			switch {
-			case r.Resolved:
-				label, style = "resolved", good
-			case r.Reason == skippedLiteral:
-				label, style = "skipped", quiet
-			case r.Status > 0:
-				label, style = strconv.Itoa(r.Status), good
-			}
-			ms := fmt.Sprintf("%d ms", r.Millis)
-			v.text(2, y, style, label)
-			origin := []rune(r.origin)
-			room := v.w - 17 - len(ms)
-			if len(origin) > room {
-				origin = append(origin[:room-1], '…')
-			}
-			v.text(14, y, plain, string(origin))
-			v.text(v.w-2-len(ms), y, quiet, ms)
+	return rows + 1
+}
+
+func (s *scan) drawRecent(v canvas) int {
+	v.heading(0, "RECENT ORIGINS")
+	if len(s.recent) == 0 {
+		v.text(0, 1, quiet, "Awaiting first result")
+		return 2
+	}
+	for i, r := range s.recent {
+		label, style := r.Reason, bad
+		switch {
+		case r.Resolved:
+			label, style = "resolved", good
+		case r.Reason == skippedLiteral:
+			label, style = "skipped", quiet
+		case r.Status > 0:
+			label, style = strconv.Itoa(r.Status), good
 		}
+		ms := fmt.Sprintf("%d ms", r.Millis)
+		v.at(0, 0, 10).text(0, i+1, style, label)
+		v.at(11, 0, v.w-12-len(ms)).text(0, i+1, plain, r.origin)
+		v.text(v.w-len(ms), i+1, quiet, ms)
 	}
+	return len(s.recent) + 1
 }
 
 func topCounts[K cmp.Ordered](counts map[K]int) []K {
